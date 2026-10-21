@@ -1,0 +1,17 @@
+# Loose lower bounds instead of exact pins. The exact versions this started
+# with are from 2024; two years on some of them no longer resolve together,
+# and yt-dlp in particular MUST be current -- YouTube and Twitch change their
+# players constantly and an old yt-dlp simply fails to download.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+faster-whisper>=1.0.3
+anthropic>=0.34
+yt-dlp[default]>=2025.11.12
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+# Tekent de hooktekst (met kleuren-emoji) als afbeelding die over de video komt.
+pillow>=10.4
+pydantic>=2.9
+pypdf>=4.3
+python-docx>=1.1

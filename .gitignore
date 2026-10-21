@@ -1,0 +1,12 @@
+.env
+*.env
+!.env.example
+clipparty/backend/storage/
+storage/
+*.db
+__pycache__/
+*.pyc
+*.mp4
+models/
+.venv/
+venv/
