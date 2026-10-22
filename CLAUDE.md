@@ -121,14 +121,121 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
      plus de twee pakketten losse credits.
    - Creditteller in de header (vervangt de huidige "Proef: x clips"-chip).
    - Wachtrijstatus tijdens het verwerken: "Je video staat op plek 2 in de wachtrij, geschatte wachttijd: 3 minuten".
-7. **Mollie**: testen met een testsleutel. Abonnementen als echte terugkerende betaling
-   (Mollie customers + mandates + subscriptions), losse credits als eenmalige betaling.
+7. **Betalen via Stripe (vervangt de Mollie-code in `accounts.py`).** Zie "Stripe" hieronder.
 8. **Wachtwoord vergeten** en e-mailadres bevestigen (mailservice zoals Resend, Postmark of SMTP).
    Bij de gratis proefperiode is dat ook nodig tegen misbruik met nep-accounts.
-9. **Online zetten** achter https (bijv. Caddy op de server). Opslagruimte bewaken.
+9. **Online zetten op Hetzner.** Zie "Hetzner" hieronder.
 10. **Juridisch**: algemene voorwaarden, privacyverklaring (AVG: accounts, gezichtsfoto's = biometrie),
     KvK/btw. Apple-emoji zijn van Apple: overweeg `CLIPNOVA_EMOJI_CDN=0` (Noto) voor de betaalde versie.
     Downloaden via yt-dlp van YouTube/Twitch voor klanten is een risico; laat klanten bij voorkeur zelf uploaden.
+
+## Hetzner (hosting)
+
+Ontwikkelen op de pc van de eigenaar (Claude Code + privé GitHub-repo); draaien op een Hetzner
+Cloud-server met Docker. De eigenaar maakt het account, de server en het domein aan; Claude Code
+schrijft de bestanden en de stappen.
+
+- Server: Ubuntu LTS, inloggen met SSH-sleutel (geen wachtwoord), Hetzner-firewall alleen 22, 80, 443.
+  Klein beginnen (4–8 vCPU) en opschalen; Gemini rekende met 16 gedeelde vCPU. Geen GPU nodig als
+  Deepgram/Groq het uitschrijven doen.
+- Domein: A-record naar het IP van de server (bijv. app.clipnova.nl).
+- Bouwen: `docker-compose.yml` met twee diensten:
+  1. `clipnova` (deze app), met het volume voor `/app/backend/storage` en env uit `.env`.
+  2. `caddy` als voorkant: regelt automatisch https (Let's Encrypt) en stuurt door naar poort 8000.
+     Uploadgrootte toestaan (grote video's) en lange time-outs.
+- `.env` alleen op de server, nooit in git: AI-sleutels, Deepgram, Apify, Stripe, `CLIPNOVA_PUBLIC_URL`.
+- Updaten: op de server `git pull` en `docker compose up -d --build`. Later eventueel automatisch via GitHub Actions.
+- Back-ups: Hetzner-back-ups of snapshots aanzetten, plus een dagelijkse kopie van `clipnova.db`.
+  Schijf bewaken (clips nemen ruimte); oude clips na bijv. 30 dagen opruimen (melden aan klanten).
+- Schrijf een `DEPLOY.md` met deze stappen in gewone taal voor de eigenaar.
+
+## Stripe (betalen)
+
+Vervangt de Mollie-code. De eigenaar maakt het Stripe-account aan (bedrijfsgegevens, KvK,
+bankrekening) en werkt eerst in **testmodus**.
+
+- In Stripe: per abonnement een product met maandprijs (Starter €20, Pro €30, Business €50, incl. btw);
+  losse credits als eenmalige prijzen (bedragen kiest de eigenaar). Betaalmethoden: kaart, iDEAL,
+  SEPA-incasso, Bancontact. Btw: Stripe Tax overwegen.
+- In de app:
+  - **Stripe Checkout** in abonnementsmodus voor de plannen, in betaalmodus voor losse credits.
+  - **Klantportaal van Stripe** voor opzeggen, wisselen van abonnement en facturen.
+  - **Webhook** `POST /api/billing/webhook`, met handtekeningcontrole (`STRIPE_WEBHOOK_SECRET`).
+    Events: `checkout.session.completed`, `invoice.paid` (periode verlengen, credits van de maand
+    zetten), `invoice.payment_failed`, `customer.subscription.updated` en `.deleted` (terug naar Gratis).
+  - In de database per gebruiker: `stripe_customer_id`, `stripe_subscription_id`, status, periode-einde.
+  - Env: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, de price-ID's per plan en pakket, `CLIPNOVA_PUBLIC_URL`.
+- Testen met de Stripe CLI (`stripe listen --forward-to …/api/billing/webhook`) en testkaarten, inclusief
+  mislukte betaling en opzeggen. Pas daarna de live-sleutels.
+
+## Openbaar zetten (checklist vóór de lancering)
+
+Technisch is de app openbaar zodra het domein met https naar de Hetzner-server wijst. Eerst afvinken:
+- **Landingspagina** op `/` (voorbeeldclips, prijzen, "gratis beginnen"); de app zelf achter inloggen.
+  Pagina's voor algemene voorwaarden en privacyverklaring maken van `docs/algemene-voorwaarden.md`
+  en `docs/privacyverklaring.md` (concepten, eerst laten nakijken door een jurist), plus contact,
+  gelinkt in de footer. Bij aanmelden een vinkje "Ik ga akkoord met de algemene voorwaarden" en een
+  link naar de privacyverklaring; datum en versie van akkoord opslaan.
+- **Google Fonts-link uit `index.html` halen**: TikTok Sans staat al lokaal, en laden bij Google
+  stuurt IP-adressen van bezoekers naar Google (AVG). Dan zijn er alleen functionele cookies
+  (inlogcookie) en is geen cookiebanner nodig, zolang er geen analytics-/advertentiecookies bij komen.
+- **Mail werkt**: e-mail bevestigen, wachtwoord vergeten, betaalbevestiging (Stripe stuurt facturen zelf).
+- **Stripe live** na geslaagde tests in testmodus.
+- **Misbruik beperken**: inlogpogingen begrenzen, aanmelden begrenzen per IP, gratis plan pas na
+  e-mailbevestiging, maximale uploadgrootte.
+- **Beheer**: back-ups getest (terugzetten geprobeerd), schijfruimte- en foutmeldingen naar de eigenaar,
+  een statuspagina of melding bij storing.
+- **Zachte start**: eerst 5–10 testers met een uitnodigingscode, daarna open.
+- Vindbaarheid: titel/beschrijving en voorbeeldafbeelding per pagina, `sitemap.xml`, aanmelden bij
+  Google Search Console.
+
+## Beveiliging (verplicht vóór de lancering)
+
+Laat elk punt zien en uitleggen aan de eigenaar; test na afloop zelf of de aanval echt faalt.
+
+**Server (Hetzner)**
+- Alleen inloggen met SSH-sleutel, wachtwoord-login en root-login uit; fail2ban; automatische
+  beveiligingsupdates (unattended-upgrades); Hetzner-firewall: alleen 22, 80, 443.
+- Poort 8000 van de app niet openbaar: alleen Caddy praat met de app (intern Docker-netwerk).
+- Container draait **niet als root**; limieten op geheugen en CPU per container.
+- Back-ups versleuteld en buiten de server; terugzetten één keer echt testen.
+
+**Verkeer en browser**
+- Alleen https (Caddy), HSTS aan. Beveiligingsheaders: Content-Security-Policy (geen externe scripts),
+  X-Content-Type-Options, Referrer-Policy, frame-ancestors 'none'.
+- Inlogcookie: HttpOnly, Secure, SameSite=Lax (staat er al). Daarbovenop CSRF-bescherming:
+  bij POST/DELETE de `Origin`-header controleren tegen `CLIPNOVA_PUBLIC_URL`.
+- XSS: alle tekst van gebruikers en AI via `esc()` (gebeurt al); bij nieuwe schermen hetzelfde.
+
+**Accounts**
+- Wachtwoorden met scrypt (staat er al). Minimaal 8 tekens, controle tegen gelekte wachtwoorden
+  (HaveIBeenPwned k-anonimiteit) optioneel.
+- Rate limiting op inloggen, aanmelden, wachtwoord vergeten en dure endpoints (runs, campagnes zoeken).
+- Sessies ongeldig maken bij wachtwoord wijzigen; "overal uitloggen".
+- Beheerdersaccount: tweestapsverificatie (TOTP).
+
+**Uploads en downloads (grootste risico: de app verwerkt bestanden en links van vreemden)**
+- Maximale uploadgrootte in Caddy én in de app; bestandstype controleren met ffprobe, niet op naam.
+- Bestandsnamen opschonen (gebeurt al), nooit uitvoeren of serveren buiten `/api/clips`.
+- **SSRF voorkomen** bij YouTube-/directe links: alleen http(s), en weigeren als de host naar een
+  intern of privé-adres wijst (127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 169.254.0.0/16 = Hetzner-metadata,
+  ::1, fc00::/7), ook na redirects. Liefst een lijst met toegestane domeinen voor yt-dlp.
+- ffmpeg en yt-dlp met tijdslimiet; ffmpeg/yt-dlp/Pillow up-to-date houden (kwetsbaarheden in
+  videobestanden komen voor).
+- Briefings (PDF/DOCX): grootte begrenzen; geen macro's uitvoeren (pypdf/python-docx doen dat niet).
+
+**Gegevens en sleutels**
+- Alle sleutels alleen in `.env` op de server; nooit in git, logs of foutmeldingen naar de browser.
+- Whop-/OAuth-tokens versleuteld opslaan (sleutel in `.env`).
+- Stripe-webhook altijd met handtekeningcontrole; nooit een plan aanzetten op basis van een redirect.
+- Elke klant ziet alleen eigen runs, clips, logo, gezichten en cijfers (`own_job`, `user_root`):
+  testen met twee accounts dat account B niets van A kan openen of wijzigen (ook via ID's raden).
+- Afhankelijkheden: versies vastzetten, maandelijks bijwerken, `pip-audit` draaien.
+
+**Controle**
+- Foutmeldingen en verdachte pieken (veel 401/403, veel aanmeldingen) naar de eigenaar mailen.
+- Vóór de lancering één ronde zelf aanvallen volgens de punten hierboven, en het resultaat in
+  `SECURITY.md` zetten.
 
 ## Onderscheidende functies (gekozen door de eigenaar, bouwen na stap 1–6)
 
