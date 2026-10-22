@@ -504,6 +504,7 @@ input[type=color]{width:48px; height:40px; padding:2px; border-radius:10px; flex
  <span id="track-step"></span><span id="track-eta" class="mono"></span>
  </div>
  <button class="ghost" id="reset-btn" type="button" style="margin-top:14px; display:none;">Stoppen met volgen</button>
+ <button class="ghost danger" id="cancel-btn" type="button" style="margin-top:14px; display:none;">Annuleren</button>
  </section>
  <details id="rules-box">
  <summary>Campagneregels</summary>
@@ -950,7 +951,6 @@ async function loadLibrary(){
     if(!d.campaigns?.length){ list.innerHTML = '<div class="note">Nog geen runs. Maak je eerste clips via Clippen.</div>'; return; }
     list.innerHTML = d.campaigns.map(c => {
       const when = c.modified ? new Date(c.modified*1000).toLocaleString('nl-NL',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
-      const busy = c.status === 'queued' || c.status === 'processing';
       const label = c.status === 'done' ? c.clip_count + ' clip' + (c.clip_count === 1 ? '' : 's') : c.status === 'error' ? 'Mislukt' : (c.progress || c.status);
       const why = c.status === 'error' && c.error
         ? `<div class="note bad" style="margin-top:4px; font-size:12px;">${esc(String(c.error).slice(0,300))}</div>` : '';
@@ -959,8 +959,8 @@ async function loadLibrary(){
         <div class="lrun-acts">
           ${c.clip_count ? `<button class="ghost" type="button" data-lib-show="${esc(c.job_id)}">Clips tonen</button>` : ''}
           <button class="ghost" type="button" data-lib-open="${esc(c.job_id)}">Openen bij Clippen</button>
-          ${busy ? '<span class="note" style="margin:0; align-self:center;">Bezig — kan nog niet weg</span>'
-                 : `<button class="ghost danger" type="button" data-lib-del="${esc(c.job_id)}" data-size="${c.bytes || 0}">Verwijderen</button>`}
+          ${c.status === 'processing' ? '<span class="note" style="margin:0; align-self:center;">Bezig — kan nog niet weg</span>'
+                 : `<button class="ghost danger" type="button" data-lib-del="${esc(c.job_id)}" data-size="${c.bytes || 0}">${c.status === 'queued' ? 'Annuleren' : 'Verwijderen'}</button>`}
         </div>
         <div class="lclips" hidden></div>
       </div>`;
@@ -1168,8 +1168,18 @@ function stopPolling(){
  $('progress-card').style.display = 'none';
  $('track-text').style.display = 'none';
  $('reset-btn').style.display = 'none';
+ $('cancel-btn').style.display = 'none';
 }
 $('reset-btn').onclick = () => { stopPolling(); status('Klaar voor een nieuwe run'); };
+$('cancel-btn').onclick = async () => {
+ if(!CURRENT_JOB || !confirm('Deze run annuleren? Er worden geen credits gebruikt.')) return;
+ try{
+ const r = await fetch(API_BASE + '/api/campaign/' + CURRENT_JOB, {method:'DELETE'});
+ const d = await r.json().catch(() => ({}));
+ if(!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+ stopPolling(); loadMe(); status('Run geannuleerd');
+ }catch(e){ status(e.message, 'off'); }
+};
 
 function poll(jobId){
  CURRENT_JOB = jobId;
@@ -1188,6 +1198,14 @@ function poll(jobId){
 
  const pct = typeof d.pct === 'number' ? d.pct : null;
  status((d.progress || d.status) + (pct !== null ? ' · ' + Math.round(pct) + '%' : ''), 'busy');
+ // Wachtrij: plek en geschatte wachttijd; een wachtende run kun je nog annuleren.
+ $('cancel-btn').style.display = d.status === 'queued' ? 'inline-block' : 'none';
+ if(d.status === 'queued'){
+ fill.style.width = '0';
+ $('track-text').style.display = 'flex';
+ $('track-step').textContent = d.progress || 'In de wachtrij';
+ $('track-eta').textContent = '';
+ }
  if(pct !== null){
  fill.style.width = pct + '%';
  $('track-text').style.display = 'flex';

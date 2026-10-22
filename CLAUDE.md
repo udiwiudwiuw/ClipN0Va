@@ -10,7 +10,7 @@ met hooktekst + emoji in beeld, woord-voor-woord ondertitels, en per clip titel,
 bijschrift met hashtags. Klanten zijn clippers die betaald worden per views via campagnes
 (o.a. Content Rewards).
 
-Huidige versie: **v127**. Map heet nog `clipparty`, env-variabelen heten nog `CLIPPARTY_*`
+Huidige versie: **v128**. Map heet nog `clipparty`, env-variabelen heten nog `CLIPPARTY_*`
 (bewust, zodat oude Docker-commando's werken).
 
 ## Vaste keuzes van de eigenaar (niet veranderen zonder te vragen)
@@ -28,6 +28,12 @@ Huidige versie: **v127**. Map heet nog `clipparty`, env-variabelen heten nog `CL
 - **Bijgekochte credits vervallen niet**: ze blijven staan tot ze op zijn.
 - API-sleutels **nooit in de code of de repo**. De beheerder vult ze één keer in de app in
   (`storage/keys.json` op het volume, zie `service_key` in `clipper.py`); env-variabelen zijn reserve.
+  Zo houden (besloten door de eigenaar), ook na de lancering: dit geldt als uitzondering op
+  "alle sleutels alleen in `.env`" bij Beveiliging. De browser ziet nooit meer dan de laatste 4 tekens.
+- **Wachtrij: iedereen gelijk.** Betalende klanten krijgen geen voorrang op de proefperiode.
+- **Na opzeggen of verlopen** kan de klant nog inloggen en zijn clips zien, maar geen nieuwe clips
+  maken. Bijgekochte credits blijven bruikbaar.
+- **Volgorde van credits:** eerst die van het abonnement, dan de bijgekochte.
 
 ## Structuur
 
@@ -45,7 +51,7 @@ Huidige versie: **v127**. Map heet nog `clipparty`, env-variabelen heten nog `CL
 - `backend/people.py`: gezichtenbibliotheek per gebruiker (YuNet + SFace).
 - `frontend/index.html`: de hele interface (één bestand, vanilla JS).
 
-## Hoe het nu werkt (v127)
+## Hoe het nu werkt (v128)
 
 - Eerste account = beheerder (onbeperkt, ziet AI-sleutels, Deepgram, gebruikersbeheer).
 - Limiet telt al **clips** (1 clip = 1 credit): proefperiode 7 dagen / 10 clips; Starter €12,99/30,
@@ -56,8 +62,13 @@ Huidige versie: **v127**. Map heet nog `clipparty`, env-variabelen heten nog `CL
   Zonder Mollie zet de beheerder abonnementen handmatig aan.
 - Klantcijfers (views, likes, uitbetaling) vult de klant zelf in per clip; verdiensten = uitbetaling,
   anders views/1000 × CPM van de gekoppelde campagne.
-- Elke run start een eigen thread, zonder wachtrij. Per run knipt hij tot 4 clips tegelijk, met
-  ffmpeg-threads = helft van de cores. Lokaal Whisper gebruikt alle cores.
+- **Wachtrij** (v128, `main.py`: `enqueue_job`, `_queue_worker`, `queue_info`, `_recover_jobs`):
+  maximaal `CLIPNOVA_MAX_RUNS` runs tegelijk (standaard 2). Volgorde: wie het langst wacht, maar een
+  klant met een lopende run laat anderen voor. Wachtende runs zijn te annuleren. Credits worden bij
+  het insturen én bij de start geteld, met de clips die andere runs van de klant nog mogen maken.
+  Na een herstart gaan wachtende en lopende runs terug in de rij (`input.json` per run).
+- Per run knipt hij tot 4 clips tegelijk, met ffmpeg-threads = helft van de cores. Lokaal Whisper
+  gebruikt alle cores. (Stap 4 begrenst dit.)
 - Bronvideo's worden na elke run verwijderd, ook na een mislukte (`CLIPNOVA_KEEP_SOURCES=1` om te bewaren).
 - Sleutels (Groq, Deepgram, Anthropic, OpenAI) en de AI-aanbieder stelt de beheerder in onder
   Instellingen; klanten kiezen de aanbieder niet zelf.
@@ -87,8 +98,8 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
   voordeliger, maar blijft duurder dan elk abonnement.
   Laat bij het kopen zien welk abonnement goedkoper uitkomt ("Met Pro betaal je €0,75 per clip").
   **Bijgekochte credits vervallen niet** (besloten door de eigenaar): ze blijven staan tot ze op zijn,
-  ook als het abonnement afloopt. Voorstel (bevestigen bij de eigenaar): eerst de credits van het
-  abonnement gebruiken, dan de bijgekochte.
+  ook als het abonnement afloopt. Eerst de credits van het abonnement gebruiken, dan de bijgekochte
+  (besloten door de eigenaar).
 - **De proefperiode blijft** (besloten door de eigenaar): er komt geen gratis abonnement van 3 per week.
 - Netto per abonnement (bruto min 21% btw en ~€0,65–1,15 Mollie): Starter ~€15,88, Pro ~€23,99,
   Business ~€40,17. Break-even op de server: 8 tot 10 betalende gebruikers.
@@ -104,9 +115,7 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
    ondertitels, gezicht volgen, bijschriften, regelcontrole met een echte briefing, Analytics.
    Noteer per run de tijd en de AI-kosten.
 2. ~~**Git**~~ Klaar (v127): code staat los in `clipparty/`, met `.gitignore`. Controleer zelf of de repo op GitHub privé staat.
-3. **Wachtrij (job queue).** Maximaal 1 à 2 runs tegelijk op de 16 vCPU-server, om geheugentekorten
-   (OOM) te voorkomen. Een semafoor of eigen wachtrij-thread in het proces is genoeg; Redis/Celery
-   pas bij meerdere servers. Runs die bij een herstart op "bezig" bleven staan, opruimen of opnieuw in de rij zetten.
+3. ~~**Wachtrij (job queue).**~~ Klaar (v128), zie "Hoe het nu werkt". Redis/Celery pas bij meerdere servers.
 4. **CPU-limiet per render.** ffmpeg met een vaste `-threads` van 2 à 4 per clip, minder clips tegelijk
    per run (2), en Whisper-threads begrenzen. Reken uit: runs × clips tegelijk × threads ≤ 16.
    Houd preset `veryfast` (nu al zo): `fast` is trager, niet sneller.
@@ -120,7 +129,7 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
    - Prijstabel met de 4 abonnementen (€0, €20, €30, €50), met credits en maximale lengte per kaart,
      plus de twee pakketten losse credits.
    - Creditteller in de header (vervangt de huidige "Proef: x clips"-chip).
-   - Wachtrijstatus tijdens het verwerken: "Je video staat op plek 2 in de wachtrij, geschatte wachttijd: 3 minuten".
+   - ~~Wachtrijstatus tijdens het verwerken~~ Klaar (v128), met annuleerknop.
 7. **Betalen via Stripe (vervangt de Mollie-code in `accounts.py`).** Zie "Stripe" hieronder.
 8. **Wachtwoord vergeten** en e-mailadres bevestigen (mailservice zoals Resend, Postmark of SMTP).
    Bij de gratis proefperiode is dat ook nodig tegen misbruik met nep-accounts.
@@ -162,7 +171,8 @@ bankrekening) en werkt eerst in **testmodus**.
   - **Klantportaal van Stripe** voor opzeggen, wisselen van abonnement en facturen.
   - **Webhook** `POST /api/billing/webhook`, met handtekeningcontrole (`STRIPE_WEBHOOK_SECRET`).
     Events: `checkout.session.completed`, `invoice.paid` (periode verlengen, credits van de maand
-    zetten), `invoice.payment_failed`, `customer.subscription.updated` en `.deleted` (terug naar Gratis).
+    zetten), `invoice.payment_failed`, `customer.subscription.updated` en `.deleted` (abonnement
+    verloopt: inloggen en clips bekijken kan nog, nieuwe clips niet; bijgekochte credits blijven bruikbaar).
   - In de database per gebruiker: `stripe_customer_id`, `stripe_subscription_id`, status, periode-einde.
   - Env: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, de price-ID's per plan en pakket, `CLIPNOVA_PUBLIC_URL`.
 - Testen met de Stripe CLI (`stripe listen --forward-to …/api/billing/webhook`) en testkaarten, inclusief
@@ -182,7 +192,7 @@ Technisch is de app openbaar zodra het domein met https naar de Hetzner-server w
 - **Mail werkt**: e-mail bevestigen, wachtwoord vergeten, betaalbevestiging (Stripe stuurt facturen zelf).
 - **Stripe live** na geslaagde tests in testmodus.
 - **Misbruik beperken**: inlogpogingen begrenzen, aanmelden begrenzen per IP, gratis plan pas na
-  e-mailbevestiging, maximale uploadgrootte.
+  e-mailbevestiging, maximale uploadgrootte. (Er is geen gratis plan: dit geldt voor de proefperiode.)
 - **Beheer**: back-ups getest (terugzetten geprobeerd), schijfruimte- en foutmeldingen naar de eigenaar,
   een statuspagina of melding bij storing.
 - **Zachte start**: eerst 5–10 testers met een uitnodigingscode, daarna open.
@@ -225,7 +235,8 @@ Laat elk punt zien en uitleggen aan de eigenaar; test na afloop zelf of de aanva
 - Briefings (PDF/DOCX): grootte begrenzen; geen macro's uitvoeren (pypdf/python-docx doen dat niet).
 
 **Gegevens en sleutels**
-- Alle sleutels alleen in `.env` op de server; nooit in git, logs of foutmeldingen naar de browser.
+- Alle sleutels alleen op de server (`.env`, of `storage/keys.json` via de app: besloten door de
+  eigenaar); nooit in git, logs of foutmeldingen naar de browser.
 - Whop-/OAuth-tokens versleuteld opslaan (sleutel in `.env`).
 - Stripe-webhook altijd met handtekeningcontrole; nooit een plan aanzetten op basis van een redirect.
 - Elke klant ziet alleen eigen runs, clips, logo, gezichten en cijfers (`own_job`, `user_root`):

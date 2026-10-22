@@ -1,4 +1,6 @@
 import asyncio
+import dataclasses
+import heapq
 import json
 import os
 import re
@@ -23,7 +25,7 @@ import campaign_search
 import accounts
 import analytics
 
-APP_VERSION = "v127"
+APP_VERSION = "v128"
 
 BASE_DIR = Path(__file__).parent
 
@@ -216,11 +218,186 @@ def _cleanup_sources(job_dir: Path, videos: list) -> None:
             pass
 
 
+# ======================================================================
+# Wachtrij: maximaal CLIPNOVA_MAX_RUNS runs tegelijk (standaard 2), zodat
+# de server niet zonder geheugen komt te zitten als veel klanten tegelijk
+# starten. Alles in dit proces: geen Redis nodig zolang er één server is.
+# ======================================================================
+MAX_RUNS = max(1, int(os.environ.get("CLIPNOVA_MAX_RUNS", "2")))
+_QUEUE: list = []              # wachtende runs, oudste eerst
+_RUNNING: set = set()
+_QCOND = threading.Condition()
+_RUN_TIMES: list = []          # duur van de laatste geslaagde runs, voor de geschatte wachttijd
+_DEFAULT_RUN_SECONDS = 240
+
+
+def _input_path(job_id: str) -> Path:
+    return STORAGE / job_id / "input.json"
+
+
+def save_job_input(job_id: str) -> None:
+    """Wat nodig is om de run na een herstart opnieuw te starten, zonder dat
+    de klant opnieuw hoeft te uploaden. Geen sleutels."""
+    job = JOBS[job_id]
+    data = {"videos": job.get("videos") or [], "briefing_text": job.get("briefing_text", ""),
+            "settings": dataclasses.asdict(job["settings"]), "owner": job.get("owner"),
+            "pending_download": job.get("pending_download"), "created": job.get("created")}
+    _input_path(job_id).write_text(json.dumps(data))
+
+
+def enqueue_job(job_id: str) -> None:
+    with _QCOND:
+        _QUEUE.append(job_id)
+        _QCOND.notify()
+
+
+def _pick_next_locked() -> str:
+    """Wie het langst wacht gaat eerst, maar een klant die al een run heeft
+    lopen laat anderen voor: zo blokkeert één klant met vijf video's niemand."""
+    busy = {JOBS[j].get("owner") for j in _RUNNING if j in JOBS}
+    return next((j for j in _QUEUE if JOBS.get(j, {}).get("owner") not in busy), _QUEUE[0])
+
+
+def _queue_worker() -> None:
+    while True:
+        with _QCOND:
+            while not _QUEUE:
+                _QCOND.wait()
+            job_id = _pick_next_locked()
+            _QUEUE.remove(job_id)
+            _RUNNING.add(job_id)
+        started = time.time()
+        try:
+            if job_id in JOBS:
+                run_job(job_id)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            with _QCOND:
+                _RUNNING.discard(job_id)
+                if JOBS.get(job_id, {}).get("status") == "done":
+                    _RUN_TIMES.append(time.time() - started)
+                    del _RUN_TIMES[:-10]
+
+
+def queue_info(job_id: str) -> Optional[dict]:
+    """Plek in de wachtrij en geschatte wachttijd, of None als de run niet wacht."""
+    with _QCOND:
+        if job_id not in _QUEUE:
+            return None
+        ahead = _QUEUE.index(job_id)
+        running = list(_RUNNING)
+    avg = sum(_RUN_TIMES) / len(_RUN_TIMES) if _RUN_TIMES else _DEFAULT_RUN_SECONDS
+    # Per plek: wanneer komt hij vrij? Lopende runs geven hun eigen schatting.
+    slots = [float(JOBS.get(j, {}).get("eta_seconds") or avg) for j in running][:MAX_RUNS]
+    slots += [0.0] * (MAX_RUNS - len(slots))
+    heapq.heapify(slots)
+    for _ in range(ahead):
+        heapq.heappush(slots, heapq.heappop(slots) + avg)
+    wait = int(slots[0])
+    minutes = max(1, round(wait / 60))
+    text = (f"Je video staat op plek {ahead + 1} in de wachtrij, geschatte wachttijd: "
+            f"{minutes} {'minuut' if minutes == 1 else 'minuten'}")
+    return {"position": ahead + 1, "wait_seconds": wait, "text": text}
+
+
+def _reserved_clips(owner, exclude: str = "", statuses=("queued", "processing")) -> int:
+    """Clips die andere runs van deze klant nog mogen maken (nog niet afgeschreven)."""
+    return sum(int(getattr(j.get("settings"), "max_clips", 0) or 0) for jid, j in list(JOBS.items())
+               if jid != exclude and j.get("owner") == owner and j.get("status") in statuses)
+
+
+def _recover_jobs() -> None:
+    """Runs die bij een herstart wachtten of bezig waren, opnieuw in de rij.
+    Een run die al bezig was begint opnieuw; half gemaakte clips gaan weg en
+    kosten niets (credits worden pas aan het eind afgeschreven)."""
+    found = []
+    for state_path in STORAGE.glob("*/job.json"):
+        job_id = state_path.parent.name
+        if not _JOB_ID.match(job_id) or job_id in JOBS:
+            continue
+        state = load_job_state(job_id) or {}
+        if state.get("status") not in ("queued", "processing"):
+            continue
+        try:
+            inp = json.loads(_input_path(job_id).read_text())
+        except Exception:
+            inp = None
+        job_dir = state_path.parent
+        ok = bool(inp) and (inp.get("videos") or inp.get("pending_download")) \
+            and all(Path(v).exists() for v in inp.get("videos") or [])
+        if not ok:
+            JOBS[job_id] = {**state, "status": "error", "clips": [], "pct": None, "eta_seconds": None,
+                            "error": "De server is herstart tijdens je run en de video was niet meer te vinden. "
+                                     "Er zijn geen credits gebruikt; start de run opnieuw."}
+            save_job_state(job_id)
+            JOBS.pop(job_id, None)
+            continue
+        keep = set(inp.get("videos") or [])
+        for f in job_dir.iterdir():
+            if str(f) in keep or f.name in ("job.json", "input.json") or f.suffix.lower() in (".pdf", ".docx", ".txt", ".md"):
+                continue
+            shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink(missing_ok=True)
+        try:
+            settings = clipper.Settings(**{k: v for k, v in (inp.get("settings") or {}).items()
+                                           if k in _SETTING_FIELDS})
+        except TypeError:
+            settings = clipper.Settings()
+        JOBS[job_id] = {
+            "status": "queued", "progress": "In de wachtrij (na een herstart van de server)", "pct": None,
+            "eta_seconds": None, "started_at": time.time(), "created": inp.get("created") or 0,
+            "videos": list(keep), "briefing_text": inp.get("briefing_text", ""), "settings": settings,
+            "api_key": None, "clips": [], "owner": inp.get("owner"),
+        }
+        if inp.get("pending_download"):
+            JOBS[job_id]["pending_download"] = inp["pending_download"]
+        save_job_state(job_id)
+        found.append(job_id)
+    for job_id in sorted(found, key=lambda j: JOBS[j]["created"]):
+        enqueue_job(job_id)
+    if found:
+        print(f"[ClipNova] {len(found)} run(s) na de herstart opnieuw in de wachtrij gezet.", flush=True)
+
+
+def start_queue() -> None:
+    if getattr(start_queue, "started", False):
+        return
+    start_queue.started = True
+    _recover_jobs()
+    for n in range(MAX_RUNS):
+        threading.Thread(target=_queue_worker, name=f"clipnova-run-{n + 1}", daemon=True).start()
+    print(f"[ClipNova] Wachtrij actief: maximaal {MAX_RUNS} run(s) tegelijk.", flush=True)
+
+
+def _check_credits_at_start(job_id: str) -> None:
+    """Credits opnieuw tellen op het moment dat de run echt begint: in de
+    wachttijd kan het abonnement verlopen zijn of kan een andere run van
+    dezelfde klant credits gebruikt hebben."""
+    job = JOBS[job_id]
+    user = accounts.get_user(job.get("owner")) if job.get("owner") else None
+    if not user:
+        return
+    q = accounts.quota(user)
+    if q["remaining"] is None:
+        return
+    allowed = q["remaining"] - _reserved_clips(job["owner"], exclude=job_id, statuses=("processing",))
+    if not q["active"] or allowed <= 0:
+        raise clipper.UserError("Je credits zijn op of je abonnement is verlopen, dus deze run is niet gestart. "
+                                "Er zijn geen credits gebruikt.")
+    job["settings"].max_clips = max(1, min(job["settings"].max_clips or allowed, allowed))
+
+
 def run_job(job_id: str):
     job = JOBS[job_id]
     job_dir = STORAGE / job_id
     try:
         job["status"] = "processing"
+        # De resterende tijd telt vanaf nu, niet vanaf het uploaden (anders telt de wachttijd mee).
+        job["started_at"] = time.time()
+        job["pct"] = 0.0
+        job["progress"] = "Starten"
+        save_job_state(job_id)
+        _check_credits_at_start(job_id)
         settings = job["settings"]
 
         pending = job.pop("pending_download", None)
@@ -503,7 +680,11 @@ async def create_campaign(
     except (ValueError, TypeError) as e:
         raise HTTPException(400, f"Ongeldige instellingen: {e}")
     if quota["remaining"] is not None:
-        settings.max_clips = max(1, min(settings.max_clips or quota["remaining"], quota["remaining"]))
+        free = quota["remaining"] - _reserved_clips(user["id"])
+        if free <= 0:
+            raise HTTPException(402, "Je andere runs in de wachtrij gebruiken al al je credits. "
+                                     "Wacht tot die klaar zijn, of annuleer er een.")
+        settings.max_clips = max(1, min(settings.max_clips or free, free))
     campaign = accounts.campaign_of(user["id"], campaign_id) if campaign_id else None
 
     job_id = uuid.uuid4().hex[:12]
@@ -545,9 +726,10 @@ async def create_campaign(
     JOBS[job_id] = {
         "status": "queued",
         "progress": "In de wachtrij",
-        "pct": 0.0,
+        "pct": None,
         "eta_seconds": None,
         "started_at": time.time(),
+        "created": time.time(),
         "videos": video_paths,
         "briefing_text": briefing_text,
         "settings": settings,
@@ -563,8 +745,8 @@ async def create_campaign(
     accounts.add_job(job_id, user["id"], campaign["id"] if campaign else None, title, settings.hook_style)
     save_job_state(job_id)
 
-    thread = threading.Thread(target=run_job, args=(job_id,), daemon=True)
-    thread.start()
+    save_job_input(job_id)
+    enqueue_job(job_id)
 
     return {"job_id": job_id}
 
@@ -582,11 +764,13 @@ def get_campaign(job_id: str, user: dict = Depends(current_user)):
         if saved:
             return _sanitize(_with_extras(job_id, user, saved))
         raise HTTPException(404, "Job niet gevonden")
+    waiting = queue_info(job_id) if job["status"] == "queued" else None
     return _sanitize(_with_extras(job_id, user, {
         "status": job["status"],
-        "progress": job.get("progress", ""),
-        "pct": job.get("pct"),
-        "eta_seconds": job.get("eta_seconds"),
+        "progress": waiting["text"] if waiting else job.get("progress", ""),
+        "pct": None if job["status"] == "queued" else job.get("pct"),
+        "eta_seconds": waiting["wait_seconds"] if waiting else job.get("eta_seconds"),
+        "queue_position": waiting["position"] if waiting else None,
         "error": job.get("error"),
         "clips": job.get("clips", []),
         "rules": job.get("rules"),
@@ -627,8 +811,10 @@ def list_campaigns(user: dict = Depends(current_user)):
         if not job_dir.is_dir():
             continue
         job = JOBS.get(job_id)
-        state = ({"status": job.get("status"), "progress": job.get("progress", ""), "error": job.get("error"),
-                  "clips": job.get("clips", [])} if job else load_job_state(job_id)) or {}
+        waiting = queue_info(job_id) if job and job.get("status") == "queued" else None
+        state = ({"status": job.get("status"),
+                  "progress": f"In de wachtrij (plek {waiting['position']})" if waiting else job.get("progress", ""),
+                  "error": job.get("error"), "clips": job.get("clips", [])} if job else load_job_state(job_id)) or {}
         items.append({
             "job_id": job_id,
             "title": row.get("title") or "",
@@ -670,7 +856,12 @@ def delete_campaign(job_id: str, user: dict = Depends(current_user)):
         raise HTTPException(400, "Ongeldige run.")
     own_job(job_id, user)
     job = JOBS.get(job_id)
-    if job and job.get("status") in ("queued", "processing"):
+    with _QCOND:
+        # Een run die nog wacht mag weg (annuleren): niets gemaakt, niets afgeschreven.
+        cancelled = job_id in _QUEUE
+        if cancelled:
+            _QUEUE.remove(job_id)
+    if job and job.get("status") in ("queued", "processing") and not cancelled:
         raise HTTPException(409, "Deze run is nog bezig. Wacht tot hij klaar is.")
     job_dir = STORAGE / job_id
     if not job_dir.is_dir() or (job is None and load_job_state(job_id) is None):
@@ -1157,3 +1348,5 @@ _verdwenen = [r.path for r in app.routes
 if _verdwenen:
     print("[ClipNova] LET OP: deze routes staan achter de mount en geven 404:",
           ", ".join(_verdwenen))
+
+start_queue()

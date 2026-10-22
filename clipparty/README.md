@@ -1,9 +1,24 @@
-# ClipNova v127
+# ClipNova v128
 
 Eén lange video erin, tientallen staande clips eruit: hooktekst met emoji in beeld,
 woord-voor-woord ondertitels, en per clip een titel, beschrijving en bijschrift.
 Klanten hebben een eigen account met proefperiode, abonnement, merkstijl,
 campagnes en analytics.
+
+## Nieuw in v128
+
+- **Wachtrij.** Er lopen maximaal 2 runs tegelijk (`CLIPNOVA_MAX_RUNS`); de rest wacht. Zo raakt
+  de server niet zonder geheugen als veel klanten tegelijk starten. Een run op zich is niet trager
+  geworden (getest: 37–38 s tegen 38–40 s voor dezelfde run).
+- Wie het langst wacht gaat eerst, maar een klant die al een run heeft lopen laat anderen voor.
+  Iedereen gelijk: betalende klanten krijgen (nog) geen voorrang.
+- De klant ziet "Je video staat op plek 2 in de wachtrij, geschatte wachttijd: 3 minuten" (geschat
+  uit de duur van de laatste runs) en kan een wachtende run **annuleren** (kost niets).
+- **Credits niet dubbel:** wie twee runs vlak na elkaar start, kan samen nooit meer clips maken dan
+  hij credits heeft. Bij de start van een run wordt dat opnieuw gecontroleerd.
+- **Na een herstart** gaan wachtende en lopende runs vanzelf terug in de rij (`input.json` per run);
+  een run die al bezig was begint opnieuw, half gemaakte clips gaan weg en kosten niets.
+- De resterende tijd van een run telt vanaf de echte start, niet vanaf het uploaden.
 
 ## Nieuw in v127
 
