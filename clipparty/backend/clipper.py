@@ -2124,6 +2124,21 @@ def _ytdlp_error(message: str) -> str:
     return text[:400] or "onbekende fout"
 
 
+def source_duration(url: str) -> Optional[float]:
+    """Lengte van een link in seconden, zonder te downloaden. None als dat niet
+    lukt (directe bestandslinks, livestreams): dan wordt na het downloaden gemeten."""
+    low = url.lower().split("?")[0]
+    if low.endswith(_VIDEO_SUFFIXES) or any(h in url.lower() for h in _DIRECT_FILE_HOSTS):
+        return None
+    try:
+        r = subprocess.run(["yt-dlp", "--no-playlist", "--playlist-items", "1", "--skip-download",
+                            "--print", "duration", url],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        return float(r.stdout.strip().splitlines()[0]) if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
 def _source_info(url: str) -> str:
     """Titel, kanaal en beschrijving van de bron: helpt de AI met namen en context."""
     try:
@@ -2475,8 +2490,20 @@ def _moments_from_audio(video_path: str, settings: "Settings", video_end: Option
 # ---------------------------------------------------------------------------
 # De hele video verwerken
 # ---------------------------------------------------------------------------
-class TranscribeError(RuntimeError):
-    """Uitschrijven lukte op geen enkele manier; de tekst is voor de klant bedoeld."""
+class UserError(RuntimeError):
+    """Fout waarvan de tekst voor de klant bedoeld is (zonder technische foutnaam)."""
+
+
+class TranscribeError(UserError):
+    """Uitschrijven lukte op geen enkele manier."""
+
+
+def too_long_message(seconds: float, max_minutes: int, plan_name: str = "", count: int = 1) -> str:
+    where = f"In je {plan_name.lower()}" if plan_name else "Met je abonnement"
+    what = "Deze video duurt" if count <= 1 else f"Deze {count} video's duren samen"
+    return (f"{what} {seconds / 60:.0f} minuten. {where} kun je video's tot "
+            f"{max_minutes} minuten gebruiken (alle video's van één run samen). "
+            "Knip de video korter of kies een groter abonnement.")
 
 
 def process_video(video_path: str, briefing: str, settings: "Settings", job_dir: str,

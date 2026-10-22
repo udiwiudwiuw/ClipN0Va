@@ -245,6 +245,13 @@ def run_job(job_id: str):
                 raise RuntimeError("Geen van de bronnen kon worden gedownload. "
                                    + (failed[0] if failed else ""))
             job["videos"] = list(job.get("videos") or []) + got
+            limit = pending.get("max_minutes")
+            if limit:
+                # Ook na het downloaden meten: van directe links is de lengte vooraf niet bekend.
+                total = sum(clipper._video_duration(v) or 0 for v in job["videos"])
+                if total > limit * 60 + 5:
+                    raise clipper.UserError(clipper.too_long_message(
+                        total, limit, pending.get("plan_name", ""), len(job["videos"])))
             if failed:
                 job.setdefault("notes", []).extend(
                     [f"Overgeslagen: {f[:160]}" for f in failed])
@@ -411,7 +418,7 @@ def run_job(job_id: str):
         print(f"[ClipNova] Run {job_id} MISLUKT: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         job["status"] = "error"
-        job["error"] = str(e) if isinstance(e, clipper.TranscribeError) else f"{type(e).__name__}: {e}"
+        job["error"] = str(e) if isinstance(e, clipper.UserError) else f"{type(e).__name__}: {e}"
         save_job_state(job_id)
         # Ook na een mislukte run de bronvideo weg, anders loopt de schijf vol
         # met video's waar niets meer mee gebeurt.
@@ -520,6 +527,20 @@ async def create_campaign(
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(400, "Geen bronvideo's opgegeven (upload of YouTube-URL).")
 
+    # Maximale lengte van de bron per abonnement (proefperiode: 15 minuten),
+    # alle video's van de run samen. De browser controleert dit al vóór het
+    # uploaden; dit is de controle die telt.
+    max_minutes = quota.get("max_minutes")
+    if max_minutes:
+        durations = [await asyncio.to_thread(clipper._video_duration, p) for p in video_paths]
+        if (youtube_url or "").strip():
+            durations.append(await asyncio.to_thread(clipper.source_duration, youtube_url.strip()))
+        total = sum(d or 0 for d in durations)
+        if total > max_minutes * 60 + 5:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(413, clipper.too_long_message(total, max_minutes, quota.get("plan_name", ""),
+                                                              len(durations)))
+
     title = (campaign["name"] if campaign else "") or (Path(video_paths[0]).name if video_paths else youtube_url or "")
     JOBS[job_id] = {
         "status": "queued",
@@ -537,7 +558,8 @@ async def create_campaign(
     }
     if (youtube_url or "").strip():
         # Downloaden gebeurt in de run zelf, zodat dit verzoek meteen terugkomt.
-        JOBS[job_id]["pending_download"] = {"urls": [youtube_url.strip()], "max_minutes": None}
+        JOBS[job_id]["pending_download"] = {"urls": [youtube_url.strip()], "max_minutes": max_minutes,
+                                            "plan_name": quota.get("plan_name", "")}
     accounts.add_job(job_id, user["id"], campaign["id"] if campaign else None, title, settings.hook_style)
     save_job_state(job_id)
 

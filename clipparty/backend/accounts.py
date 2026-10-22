@@ -16,15 +16,17 @@ from typing import Optional
 
 TRIAL_DAYS = int(os.environ.get("CLIPNOVA_TRIAL_DAYS", "7"))
 TRIAL_CLIPS = int(os.environ.get("CLIPNOVA_TRIAL_CLIPS", "10"))
+TRIAL_MAX_MINUTES = int(os.environ.get("CLIPNOVA_TRIAL_MAX_MINUTES", "15"))
 SESSION_DAYS = 30
 
-# Prijzen in euro per maand; clips = maximum per periode van 30 dagen.
+# Prijzen in euro per maand; clips = maximum per periode van 30 dagen;
+# max_minutes = hoe lang de bronvideo('s) van één run samen mogen zijn (None = geen grens).
 PLANS = {
-    "trial":   {"name": "Proefperiode", "price_eur": 0.0,   "clips": TRIAL_CLIPS},
-    "starter": {"name": "Starter",      "price_eur": 12.99, "clips": 30},
-    "pro":     {"name": "Pro",          "price_eur": 24.99, "clips": 100},
-    "studio":  {"name": "Studio",       "price_eur": 49.99, "clips": 300},
-    "admin":   {"name": "Beheerder",    "price_eur": 0.0,   "clips": 0},   # 0 = onbeperkt
+    "trial":   {"name": "Proefperiode", "price_eur": 0.0,   "clips": TRIAL_CLIPS, "max_minutes": TRIAL_MAX_MINUTES},
+    "starter": {"name": "Starter",      "price_eur": 12.99, "clips": 30,  "max_minutes": None},
+    "pro":     {"name": "Pro",          "price_eur": 24.99, "clips": 100, "max_minutes": None},
+    "studio":  {"name": "Studio",       "price_eur": 49.99, "clips": 300, "max_minutes": None},
+    "admin":   {"name": "Beheerder",    "price_eur": 0.0,   "clips": 0,   "max_minutes": None},   # 0 = onbeperkt
 }
 
 DEFAULT_BRAND = {
@@ -171,7 +173,7 @@ def quota(user: dict) -> dict:
     until = user.get("plan_until")
     if plan == "admin":
         return {"plan": plan, "plan_name": info["name"], "limit": 0, "used": 0, "remaining": None,
-                "active": True, "until": None, "days_left": None}
+                "active": True, "until": None, "days_left": None, "max_minutes": None}
     active = bool(until and until > now)
     if plan == "trial":
         since = user["created"]
@@ -182,7 +184,8 @@ def quota(user: dict) -> dict:
     remaining = max(0, info["clips"] - used) if active else 0
     return {"plan": plan, "plan_name": info["name"], "limit": info["clips"], "used": int(used),
             "remaining": remaining, "active": active, "until": until,
-            "days_left": max(0, int(-((now - until) // 86400))) if until else None}
+            "days_left": max(0, int(-((now - until) // 86400))) if until else None,
+            "max_minutes": info.get("max_minutes")}
 
 
 def record_usage(uid: int, clips: int, job_id: str) -> None:

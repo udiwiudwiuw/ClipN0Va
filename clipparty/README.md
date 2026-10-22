@@ -23,6 +23,10 @@ campagnes en analytics.
   "AI koos", hooks herhalen zich niet meer binnen een run, en het noodbijschrift krijgt
   hashtags uit de woorden van de clip.
 - Analytics telt alleen geslaagde runs.
+- **Proefperiode: max. 15 minuten video per run** (alle video's van één run samen). De browser
+  weigert een te lange video al vóór het uploaden; de server controleert uploads en links nog eens,
+  en directe links ook na het downloaden. Aan te passen met `CLIPNOVA_TRIAL_MAX_MINUTES`; per
+  abonnement in `max_minutes` in `PLANS` (`backend/accounts.py`).
 
 ## Nieuw in v126
 

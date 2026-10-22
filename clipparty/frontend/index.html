@@ -824,13 +824,37 @@ dropzone('dz-briefing','input-briefing', files => {
 
 z.querySelector('small').textContent = 'Klik om te vervangen';
 });
-dropzone('dz-videos','input-videos', files => {
+// Lengte van een video uit de browser, zonder te uploaden (0 = onbekend; dan meet de server).
+function videoSeconds(file){
+ return new Promise(res => {
+  const v = document.createElement('video'), url = URL.createObjectURL(file);
+  const done = d => { URL.revokeObjectURL(url); res(d); };
+  v.preload = 'metadata';
+  v.onloadedmetadata = () => done(isFinite(v.duration) ? v.duration : 0);
+  v.onerror = () => done(0);
+  v.src = url;
+ });
+}
+// Tekst als de video('s) samen langer zijn dan het abonnement toestaat, anders ''.
+async function tooLongText(files){
+ const max = ME?.quota?.max_minutes;
+ if(!max || !files.length) return '';
+ const total = (await Promise.all(files.map(videoSeconds))).reduce((a, b) => a + b, 0);
+ if(total <= max * 60 + 5) return '';
+ const where = ME.quota.plan === 'trial' ? 'In je proefperiode' : 'Met je abonnement';
+ const what = files.length === 1 ? 'Deze video duurt ' : 'Deze ' + files.length + ' video\'s duren samen ';
+ return what + Math.round(total / 60) + ' minuten. ' + where + ' kun je video\'s tot ' + max
+   + ' minuten gebruiken (alle video\'s van één run samen). Knip de video korter of kies een groter abonnement.';
+}
+dropzone('dz-videos','input-videos', async files => {
  if(!files.length) return;
  videoFiles = Array.from(files).slice(0,5);
  const z = $('dz-videos');
  z.classList.add('filled');
  z.querySelector('b').textContent = videoFiles.length + (videoFiles.length === 1 ? ' video klaar' : " video's klaar");
  z.querySelector('small').textContent = videoFiles.map(f => f.name).join(', ');
+ const tooLong = await tooLongText(videoFiles);
+ if(tooLong){ z.querySelector('b').textContent = 'Video te lang'; status(tooLong, 'off'); }
 });
 $('add-youtube').onclick = () => {
  const v = $('youtube-url').value.trim();
@@ -1267,6 +1291,8 @@ $('start-btn').onclick = async () => {
  if(!videoFiles.length && !youtubeUrl){ status('Voeg eerst een video of YouTube-link toe', 'off'); 
 
 $('dz-videos').scrollIntoView({behavior:'smooth', block:'center'}); return; }
+ const tooLong = await tooLongText(videoFiles);
+ if(tooLong){ status(tooLong, 'off'); $('dz-videos').scrollIntoView({behavior:'smooth', block:'center'}); return; }
  const form = new FormData();
  if(briefingFile) form.append('briefing', briefingFile);
  videoFiles.forEach(f => form.append('videos', f));
@@ -1290,7 +1316,7 @@ $('dz-videos').scrollIntoView({behavior:'smooth', block:'center'}); return; }
  btn.disabled = false; btn.textContent = 'Maak mijn clips';
  $('progress-card').style.display = 'block';
  $('track-text').style.display = 'flex';
- $('track-step').innerHTML = '<span style="color:var(--fail)">' + esc(e.message) + '</span>' + (/abonnement|clips voor deze periode/.test(e.message) ? ' <a href="#" data-view="account">Abonnement bekijken</a>' : '');
+ $('track-step').innerHTML = '<span style="color:var(--fail)">' + esc(e.message) + '</span>' + (/abonnement|clips voor deze periode/i.test(e.message) ? ' <a href="#" data-view="account">Abonnement bekijken</a>' : '');
  $('track-eta').textContent = '';
  }
 };
@@ -1358,6 +1384,8 @@ function applyMe(d){
   const chip = $('plan-chip');
   chip.hidden = false; chip.textContent = quotaText(d.quota);
   chip.classList.toggle('low', !d.quota.active || (d.quota.remaining !== null && d.quota.remaining <= 2));
+  const dzHint = $('dz-videos').querySelector('small');
+  if(!videoFiles.length) dzHint.textContent = 'MP4, MOV, MKV of WEBM · max. 5' + (d.quota.max_minutes ? ' · samen max. ' + d.quota.max_minutes + ' min' : '');
   $('logout-btn').hidden = false;
   $('me-email').textContent = 'Ingelogd als ' + d.email;
   if(d.version) $('app-version').textContent = d.version;
