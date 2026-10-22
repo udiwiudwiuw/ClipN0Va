@@ -671,31 +671,49 @@ input[type=color]{width:48px; height:40px; padding:2px; border-radius:10px; flex
 
  <section class="admin-only">
  <div class="head"><h2>AI</h2></div>
- <p class="lede">Kiest de momenten en schrijft hooktekst, titel en bijschrift.</p>
+ <p class="lede">Kiest de momenten en schrijft hooktekst, titel en bijschrift. Sleutels vul je één keer in: de server bewaart ze, ook na een herstart of update.</p>
  <div class="field">
- <div class="lbl"><b>Aanbieder</b></div>
+ <div class="lbl"><b>Aanbieder</b><small>Heeft deze geen sleutel, dan neemt de app een andere die er wel een heeft.</small></div>
  <div class="in"><select id="llm-provider">
  <option value="groq" selected>Groq</option><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option>
  </select></div>
  </div>
- <div class="row" style="margin-top:6px;">
- <input type="text" id="api-key" placeholder="API-key (leeg = de key waarmee de app startte)" autocomplete="off">
- <button class="ghost" id="test-ai-btn" type="button">Testen</button>
+ <div class="field"><div class="lbl"><b>Groq-sleutel</b><small id="key-state-groq">Nog niet ingesteld</small></div></div>
+ <div class="row">
+ <input type="password" id="key-groq" placeholder="Plak je Groq API-key" autocomplete="off">
+ <button class="ghost" type="button" data-key-save="groq">Bewaren</button>
+ <button class="ghost danger" type="button" data-key-remove="groq" hidden>Weghalen</button>
  </div>
+ <div class="field"><div class="lbl"><b>Anthropic-sleutel</b><small id="key-state-anthropic">Nog niet ingesteld</small></div></div>
+ <div class="row">
+ <input type="password" id="key-anthropic" placeholder="Plak je Anthropic API-key" autocomplete="off">
+ <button class="ghost" type="button" data-key-save="anthropic">Bewaren</button>
+ <button class="ghost danger" type="button" data-key-remove="anthropic" hidden>Weghalen</button>
+ </div>
+ <div class="field"><div class="lbl"><b>OpenAI-sleutel</b><small id="key-state-openai">Nog niet ingesteld</small></div></div>
+ <div class="row">
+ <input type="password" id="key-openai" placeholder="Plak je OpenAI API-key" autocomplete="off">
+ <button class="ghost" type="button" data-key-save="openai">Bewaren</button>
+ <button class="ghost danger" type="button" data-key-remove="openai" hidden>Weghalen</button>
+ </div>
+ <div class="row" style="margin-top:10px;">
+ <button class="ghost" id="test-ai-btn" type="button">Gekozen aanbieder testen</button>
+ </div>
+ <div class="note" id="key-status"></div>
  <div class="note mono" id="ai-status"></div>
  </section>
 
  <section class="admin-only">
  <div class="head"><h2>Uitschrijven</h2></div>
- <p class="lede">Het langzaamste deel van een run. Met een Deepgram-sleutel gaat het het snelst. Zonder sleutel gebruikt de app Groq en anders je eigen pc.</p>
- <div class="field"><div class="lbl"><b>Deepgram-sleutel</b><small id="dg-state">Nog niet ingesteld</small></div></div>
+ <p class="lede">Het langzaamste deel van een run. Met een Deepgram-sleutel gaat het het snelst. Zonder Deepgram gebruikt de app de Groq-sleutel hierboven, en anders de server zelf (traag).</p>
+ <div class="field"><div class="lbl"><b>Deepgram-sleutel</b><small id="key-state-deepgram">Nog niet ingesteld</small></div></div>
  <div class="row">
- <input type="password" id="dg-key" placeholder="Plak je Deepgram API-key" autocomplete="off">
- <button class="ghost" id="dg-save" type="button">Bewaren</button>
+ <input type="password" id="key-deepgram" placeholder="Plak je Deepgram API-key" autocomplete="off">
+ <button class="ghost" type="button" data-key-save="deepgram">Bewaren</button>
+ <button class="ghost danger" type="button" data-key-remove="deepgram" hidden>Weghalen</button>
  </div>
  <div class="row" style="margin-top:10px;">
- <button class="ghost" id="dg-test" type="button">Testen</button>
- <button class="ghost danger" id="dg-remove" type="button" hidden>Sleutel weghalen</button>
+ <button class="ghost" id="dg-test" type="button">Deepgram testen</button>
  </div>
  <div class="note" id="dg-status"></div>
  </section>
@@ -757,8 +775,6 @@ document.addEventListener('click', async e => {
  const label = b.textContent;
  b.disabled = true; b.textContent = 'Schrijven…';
  const form = new FormData();
- form.append('provider', $('llm-provider').value);
- form.append('api_key', $('api-key').value.trim());
  try{
  const r = await fetch(API_BASE + '/api/campaign/' + CURRENT_JOB + '/clip/' + encodeURIComponent(b.dataset.recap) + '/caption', {method:'POST', body:form});
  const d = await r.json().catch(() => ({}));
@@ -832,8 +848,7 @@ $('camp-btn').onclick = async () => {
   btn.disabled = true; btn.textContent = 'Zoeken…'; msg.className = 'note'; msg.textContent = 'Campagnes ophalen en beoordelen. Dit duurt tot een paar minuten.'; box.innerHTML = '';
   try{
     const f = new FormData();
-    f.append('niche', niche); f.append('apify_token', token); f.append('provider', $('llm-provider').value);
-    const k = $('api-key').value.trim(); if(k) f.append('api_key', k);
+    f.append('niche', niche); f.append('apify_token', token);
     const res = await fetch(API_BASE + '/api/campaign-search', {method: 'POST', body: f});
     const d = await res.json();
     if(!res.ok || d.error) throw new Error(d.error || d.detail || ('HTTP ' + res.status));
@@ -871,8 +886,6 @@ $('test-ai-btn').onclick = async () => {
  box.textContent = 'Testen…';
  try{
  const p = new URLSearchParams({ provider: $('llm-provider').value });
- const k = $('api-key').value.trim();
- if(k) p.set('api_key', k);
  const d = await (await fetch(API_BASE + '/api/llm-status?' + p)).json();
  box.className = 'note mono' + (d.connected ? '' : ' bad');
  box.style.color = d.connected ? 'var(--pass)' : '';
@@ -892,7 +905,7 @@ function showView(v){
  });
  window.scrollTo({top:0, behavior:'instant'});
  if(v === 'library') loadLibrary();
- if(v === 'account'){ loadAccount(); if(ME?.is_admin) loadDeepgram(); }
+ if(v === 'account'){ loadAccount(); if(ME?.is_admin) loadKeys(); }
  if(v === 'analytics') loadAnalytics();
  if(v === 'campaigns') loadMyCampaigns();
 }
@@ -1028,27 +1041,44 @@ async function ttJson(res){
   if(!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
   return d;
 }
-// --- Deepgram ---
-function renderDeepgram(d){
-  $('dg-state').textContent = d.configured ? 'Ingesteld (' + d.hint + ') — wordt als eerste gebruikt' : 'Nog niet ingesteld';
-  $('dg-key').placeholder = d.configured ? 'bewaard (' + d.hint + ')' : 'plak je Deepgram API-key';
-  $('dg-remove').hidden = !d.configured;
+// --- Sleutels (alleen beheerder) ---
+function renderKeys(d){
+  Object.entries(d.keys || {}).forEach(([name, k]) => {
+    const state = $('key-state-' + name); if(!state) return;
+    state.textContent = !k.configured ? 'Nog niet ingesteld'
+      : k.source === 'env' ? 'Ingesteld bij het opstarten (' + k.hint + ')' : 'Bewaard (' + k.hint + ')';
+    $('key-' + name).placeholder = k.configured ? 'bewaard (' + k.hint + '), plak een nieuwe om te vervangen' : 'Plak je API-key';
+    const rm = document.querySelector('[data-key-remove="' + name + '"]');
+    if(rm) rm.hidden = k.source !== 'app';
+  });
+  if(d.provider) $('llm-provider').value = d.provider;
 }
+function keyMsg(t, bad){ const b = $('key-status'); b.className = 'note' + (bad ? ' bad' : ''); b.style.color = bad ? '' : 'var(--pass)'; b.textContent = t; }
 function dgMsg(t, bad){ const b = $('dg-status'); b.className = 'note' + (bad ? ' bad' : ''); b.style.color = bad ? '' : 'var(--pass)'; b.textContent = t; }
-async function loadDeepgram(){ try{ renderDeepgram(await ttJson(await fetch(API_BASE + '/api/deepgram'))); }catch(e){} }
-async function saveDeepgram(key){
-  const form = new FormData(); form.append('api_key', key);
-  renderDeepgram(await ttJson(await fetch(API_BASE + '/api/deepgram', {method:'POST', body:form})));
+async function loadKeys(){ try{ renderKeys(await ttJson(await fetch(API_BASE + '/api/keys'))); }catch(e){} }
+async function saveKey(name, key){
+  const form = new FormData(); form.append('name', name); form.append('api_key', key);
+  renderKeys(await ttJson(await fetch(API_BASE + '/api/keys', {method:'POST', body:form})));
 }
-$('dg-save').onclick = async () => {
-  const k = $('dg-key').value.trim();
-  if(!k){ dgMsg('Plak eerst je sleutel.', true); return; }
-  try{ await saveDeepgram(k); $('dg-key').value = ''; dgMsg('Bewaard. Klik op Testen om te controleren.'); }
-  catch(e){ dgMsg(e.message, true); }
-};
-$('dg-remove').onclick = async () => {
-  try{ await saveDeepgram(''); dgMsg('Sleutel weggehaald. De app gebruikt nu Groq of je pc.'); }catch(e){ dgMsg(e.message, true); }
-};
+document.addEventListener('click', async e => {
+  const save = e.target.closest('[data-key-save]'), rm = e.target.closest('[data-key-remove]');
+  if(!save && !rm) return;
+  const name = (save || rm).dataset.keySave || (save || rm).dataset.keyRemove;
+  const msg = name === 'deepgram' ? dgMsg : keyMsg;
+  if(save){
+    const k = $('key-' + name).value.trim();
+    if(!k){ msg('Plak eerst je sleutel.', true); return; }
+    try{ await saveKey(name, k); $('key-' + name).value = ''; msg('Bewaard. Klik op Testen om te controleren.'); }
+    catch(err){ msg(err.message, true); }
+  } else {
+    try{ await saveKey(name, ''); msg('Sleutel weggehaald.'); }catch(err){ msg(err.message, true); }
+  }
+});
+$('llm-provider').addEventListener('change', async () => {
+  const form = new FormData(); form.append('provider', $('llm-provider').value);
+  try{ renderKeys(await ttJson(await fetch(API_BASE + '/api/keys/provider', {method:'POST', body:form}))); keyMsg('Aanbieder bewaard.'); }
+  catch(err){ keyMsg(err.message, true); }
+});
 $('dg-test').onclick = async () => {
   const b = $('dg-test'); b.disabled = true; dgMsg('Testen…');
   try{ const d = await ttJson(await fetch(API_BASE + '/api/deepgram/test')); dgMsg(d.message, !d.ok); }
@@ -1243,8 +1273,6 @@ $('dz-videos').scrollIntoView({behavior:'smooth', block:'center'}); return; }
  if(youtubeUrl) form.append('youtube_url', youtubeUrl);
  form.append('settings_json', JSON.stringify(collectSettings()));
  if($('job-campaign').value) form.append('campaign_id', $('job-campaign').value);
- const k = $('api-key').value.trim();
- if(k) form.append('api_key', k);
 
  const btn = $('start-btn');
  btn.disabled = true; btn.textContent = 'Bezig…';

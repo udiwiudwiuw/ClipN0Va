@@ -1,9 +1,28 @@
-# ClipNova v126
+# ClipNova v127
 
 Eén lange video erin, tientallen staande clips eruit: hooktekst met emoji in beeld,
 woord-voor-woord ondertitels, en per clip een titel, beschrijving en bijschrift.
 Klanten hebben een eigen account met proefperiode, abonnement, merkstijl,
 campagnes en analytics.
+
+## Nieuw in v127
+
+- **Sleutels één keer invullen.** Groq, Deepgram, Anthropic en OpenAI vul je als beheerder in
+  onder Instellingen → AI en Uitschrijven. De server bewaart ze op het volume
+  (`storage/keys.json`), dus ze blijven staan na een herstart of een nieuwe build; je hoeft ze
+  niet meer bij elke `docker run` mee te geven. Omgevingsvariabelen werken nog steeds als
+  reserve. Een Deepgram-sleutel uit v126 wordt vanzelf overgenomen.
+- **De juiste sleutel bij de juiste AI.** Tot v126 kon een Groq-sleutel naar Anthropic gaan (of
+  andersom); dan viel de run stil terug op "geen AI". Nu kiest de beheerder de aanbieder, en
+  heeft die geen sleutel, dan neemt de app een aanbieder die er wel een heeft. Klanten kunnen
+  de aanbieder niet zelf kiezen.
+- **Duidelijke melding als uitschrijven mislukt.** De klant ziet dan dat er geen clips gemaakt
+  zijn en geen credits gebruikt, in plaats van een technische foutcode.
+- **Mislukte runs ruimen hun bronvideo op**, net als geslaagde runs (scheelt schijfruimte).
+- **Zonder AI eerlijker en beter:** de melding zegt nu "gekozen zonder AI" in plaats van
+  "AI koos", hooks herhalen zich niet meer binnen een run, en het noodbijschrift krijgt
+  hashtags uit de woorden van de clip.
+- Analytics telt alleen geslaagde runs.
 
 ## Nieuw in v126
 
@@ -43,14 +62,14 @@ campagnes en analytics.
 ```bash
 docker build -t clipnova .
 docker run -d -p 8000:8000 \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e GROQ_API_KEY=... \
   -e APIFY_TOKEN=... \
   -v clipnova-data:/app/backend/storage \
   --restart unless-stopped --name clipnova clipnova
 ```
 
 Open `http://localhost:8000` en maak meteen je eigen account: de eerste is de beheerder.
+Vul daarna onder **Instellingen** één keer je Groq- en Deepgram-sleutel in (en eventueel
+Anthropic of OpenAI). Die blijven bewaard op het volume.
 
 **Het volume (`-v clipnova-data:...`) is verplicht**: daar staan de accounts (`clipnova.db`),
 de clips, logo's en gezichtenbibliotheken. Zonder volume ben je dat kwijt bij een nieuwe container.
@@ -59,8 +78,9 @@ de clips, logo's en gezichtenbibliotheken. Zonder volume ben je dat kwijt bij ee
 
 | Variabele | Waarvoor |
 |---|---|
-| `ANTHROPIC_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` | AI voor momenten, hooks en bijschriften (klanten gebruiken de sleutels van de server) |
-| `DEEPGRAM_API_KEY` | Snelste uitschrijven (of instellen als beheerder in de app) |
+| `ANTHROPIC_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` | Reserve als er in de app geen sleutel is bewaard. AI voor momenten, hooks en bijschriften; Groq ook voor uitschrijven |
+| `DEEPGRAM_API_KEY` | Reserve als er in de app geen Deepgram-sleutel is bewaard |
+| `CLIPNOVA_AI_PROVIDER` | `groq` / `anthropic` / `openai`: standaard-aanbieder zolang de beheerder in de app niets koos |
 | `APIFY_TOKEN` | Campagnes zoeken |
 | `MOLLIE_API_KEY`, `CLIPNOVA_PUBLIC_URL` | Online betalen |
 | `CLIPNOVA_TRIAL_DAYS`, `CLIPNOVA_TRIAL_CLIPS` | Proefperiode (standaard 7 dagen, 10 clips) |

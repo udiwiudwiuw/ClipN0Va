@@ -10,7 +10,7 @@ met hooktekst + emoji in beeld, woord-voor-woord ondertitels, en per clip titel,
 bijschrift met hashtags. Klanten zijn clippers die betaald worden per views via campagnes
 (o.a. Content Rewards).
 
-Huidige versie: **v126**. Map heet nog `clipparty`, env-variabelen heten nog `CLIPPARTY_*`
+Huidige versie: **v127**. Map heet nog `clipparty`, env-variabelen heten nog `CLIPPARTY_*`
 (bewust, zodat oude Docker-commando's werken).
 
 ## Vaste keuzes van de eigenaar (niet veranderen zonder te vragen)
@@ -23,6 +23,9 @@ Huidige versie: **v126**. Map heet nog `clipparty`, env-variabelen heten nog `CL
   toont alleen de lijst (via Apify) met een AI-oordeel per niche; mp4 en briefing regelt de klant zelf.
 - **Posten naar TikTok/Instagram/Facebook is eruit gehaald** (v124). Niet terugzetten zonder overleg.
 - Gezichtsherkenning met namen: bij twijfel géén naam gebruiken.
+- **De proefperiode blijft** (7 dagen / 10 clips). Het gratis abonnement komt er niet voor in de plaats.
+- API-sleutels **nooit in de code of de repo**. De beheerder vult ze één keer in de app in
+  (`storage/keys.json` op het volume, zie `service_key` in `clipper.py`); env-variabelen zijn reserve.
 
 ## Structuur
 
@@ -61,7 +64,7 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
 
 | Abonnement | Prijs (incl. btw) | Credits (= clips) | Max. lengte bronvideo |
 |---|---|---|---|
-| Gratis | €0 | 3 per week | 15 min |
+| Proefperiode | €0 | 10 in 7 dagen | 15 min (bevestigen bij de eigenaar) |
 | Starter | €20 /mnd | 20 per maand | 20 min |
 | Pro | €30 /mnd | 40 per maand | 30 min |
 | Business | €50 /mnd | 80 per maand | 60 min |
@@ -77,13 +80,13 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
   voordeliger, maar blijft duurder dan elk abonnement.
   Laat bij het kopen zien welk abonnement goedkoper uitkomt ("Met Pro betaal je €0,75 per clip").
   Bijgekochte credits vervallen niet aan het eind van de maand (bevestigen bij de eigenaar).
-- **Het gratis abonnement vervangt de proefperiode** van 7 dagen/10 clips (bevestigen bij de eigenaar).
+- **De proefperiode blijft** (besloten door de eigenaar): er komt geen gratis abonnement van 3 per week.
 - Netto per abonnement (bruto min 21% btw en ~€0,65–1,15 Mollie): Starter ~€15,88, Pro ~€23,99,
   Business ~€40,17. Break-even op de server: 8 tot 10 betalende gebruikers.
   **Die marge rekent geen AI-kosten mee.** Uitschrijven (Deepgram/Groq) kost per minuut bronvideo,
   ook als er maar 1 clip uit komt; de AI voor momenten en bijschriften kost per video en per clip.
-  Meet dit bij de eerste echte runs en reken de marge opnieuw uit. Let vooral op het gratis
-  abonnement: 3 clips uit een video van 15 min betekent 15 min uitschrijven.
+  Meet dit bij de eerste echte runs en reken de marge opnieuw uit. Let vooral op de
+  proefperiode: elke nieuwe gebruiker kost uitschrijven zonder dat er iets tegenover staat.
 
 ## Te bouwen, in deze volgorde
 
@@ -91,7 +94,7 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
    run met een echte Nederlandse video en een echte AI-sleutel. Controleer: hooktekst, emoji,
    ondertitels, gezicht volgen, bijschriften, regelcontrole met een echte briefing, Analytics.
    Noteer per run de tijd en de AI-kosten.
-2. **Git**: privé-repo met `.gitignore` voor `.env`, `backend/storage/`, `*.db`, `__pycache__/`, `*.mp4`, `models/`.
+2. ~~**Git**~~ Klaar (v127): code staat los in `clipparty/`, met `.gitignore`. Controleer zelf of de repo op GitHub privé staat.
 3. **Wachtrij (job queue).** Maximaal 1 à 2 runs tegelijk op de 16 vCPU-server, om geheugentekorten
    (OOM) te voorkomen. Een semafoor of eigen wachtrij-thread in het proces is genoeg; Redis/Celery
    pas bij meerdere servers. Runs die bij een herstart op "bezig" bleven staan, opruimen of opnieuw in de rij zetten.
@@ -100,7 +103,7 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
    Houd preset `veryfast` (nu al zo): `fast` is trager, niet sneller.
    Lokaal Whisper op CPU is traag: gebruik Deepgram of Groq op de server.
 5. **Creditmodel** (zie tabel) in `accounts.py`: de nieuwe prijzen en aantallen, bijgekochte credits
-   bovenop het abonnement, en het gratis abonnement per week. De afschrijving per gemaakte clip werkt
+   bovenop het abonnement; de proefperiode blijft zoals hij is. De afschrijving per gemaakte clip werkt
    al zo; houd dat. Nieuw: lengte van de bron controleren (uploads met ffprobe, links vóór het
    downloaden met `yt-dlp --print duration`) en weigeren boven de limiet van het abonnement.
    Toon de klant vooraf: "Je hebt nog X credits, deze run maakt maximaal X clips".
@@ -112,7 +115,7 @@ Server: gedeelde 16 vCPU, €157,89 per maand incl. btw. Uitvoer altijd 1080x192
 7. **Mollie**: testen met een testsleutel. Abonnementen als echte terugkerende betaling
    (Mollie customers + mandates + subscriptions), losse credits als eenmalige betaling.
 8. **Wachtwoord vergeten** en e-mailadres bevestigen (mailservice zoals Resend, Postmark of SMTP).
-   Bij een gratis abonnement is dat ook nodig tegen misbruik met nep-accounts.
+   Bij de gratis proefperiode is dat ook nodig tegen misbruik met nep-accounts.
 9. **Online zetten** achter https (bijv. Caddy op de server). Opslagruimte bewaken.
 10. **Juridisch**: algemene voorwaarden, privacyverklaring (AVG: accounts, gezichtsfoto's = biometrie),
     KvK/btw. Apple-emoji zijn van Apple: overweeg `CLIPNOVA_EMOJI_CDN=0` (Noto) voor de betaalde versie.

@@ -11,7 +11,7 @@ import json
 import re
 from typing import Optional
 
-from clipper import call_llm, _parse_json_block
+from clipper import call_llm, _parse_json_block, _STOPWORDS
 
 RULES_SYSTEM_PROMPT = """You extract structured, machine-checkable rules from an influencer/UGC
 campaign briefing. Read the briefing carefully and output ONLY a JSON object (no prose, no
@@ -456,6 +456,21 @@ def generate_caption(hook: str, reason: str, rules: dict, provider: str = "anthr
         return _heuristic_caption(hook, rules, transcript)
 
 
+def _keyword_hashtags(text: str, limit: int = 3) -> list:
+    """Hashtags uit de woorden die in de clip het vaakst vallen. Alleen voor het
+    noodbijschrift: zonder AI kwam er tot v126 geen enkele hashtag bij."""
+    stop = _STOPWORDS["nl"] | _STOPWORDS["en"]
+    counts, first = {}, {}
+    for i, w in enumerate(re.findall(r"[^\W\d_]{5,}", (text or "").lower())):
+        if w in stop:
+            continue
+        counts[w] = counts.get(w, 0) + 1
+        first.setdefault(w, i)
+    # Vaakst genoemd eerst; bij gelijkspel het langste woord (meestal het inhoudelijke).
+    best = sorted(counts, key=lambda w: (-counts[w], -len(w), first[w]))
+    return ["#" + w for w in best[:limit]]
+
+
 def _heuristic_caption(hook: str, rules: dict, transcript: str = "") -> dict:
     """Noodbijschrift als de AI niet bereikbaar is. Nooit leeg: zonder hook
     de eerste zin van wat er gezegd wordt."""
@@ -470,7 +485,7 @@ def _heuristic_caption(hook: str, rules: dict, transcript: str = "") -> dict:
     required_tags = rules.get("required_hashtags") or []
     if required_tags:
         caption += "\n" + " ".join(required_tags)
-    tags = list(rules.get("suggested_hashtags") or [])[:3]
+    tags = list(rules.get("suggested_hashtags") or [])[:3] or _keyword_hashtags(f"{hook} {transcript}")
     for handles in (rules.get("tagging") or {}).values():
         if isinstance(handles, list):
             tags.extend(handles)

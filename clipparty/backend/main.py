@@ -23,7 +23,7 @@ import campaign_search
 import accounts
 import analytics
 
-APP_VERSION = "v126"
+APP_VERSION = "v127"
 
 BASE_DIR = Path(__file__).parent
 
@@ -204,7 +204,7 @@ def _download_quality(settings) -> str:
 
 
 def _cleanup_sources(job_dir: Path, videos: list) -> None:
-    """Bronvideo's en tussenbestanden weg na een geslaagde run: de clips blijven.
+    """Bronvideo's en tussenbestanden weg na een run (geslaagd of mislukt): de clips blijven.
     Zet CLIPNOVA_KEEP_SOURCES=1 om ze te bewaren."""
     if os.environ.get("CLIPNOVA_KEEP_SOURCES") == "1":
         return
@@ -411,8 +411,11 @@ def run_job(job_id: str):
         print(f"[ClipNova] Run {job_id} MISLUKT: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         job["status"] = "error"
-        job["error"] = f"{type(e).__name__}: {e}"
+        job["error"] = str(e) if isinstance(e, clipper.TranscribeError) else f"{type(e).__name__}: {e}"
         save_job_state(job_id)
+        # Ook na een mislukte run de bronvideo weg, anders loopt de schijf vol
+        # met video's waar niets meer mee gebeurt.
+        _cleanup_sources(job_dir, job.get("videos") or [])
 
 
 def _save_upload(upload, path: Path) -> None:
@@ -453,7 +456,7 @@ def faces_delete(slug: str, user: dict = Depends(current_user)):
 _SETTING_FIELDS = {f.name for f in __import__("dataclasses").fields(clipper.Settings)}
 # Deze velden vult de server in, niet de browser.
 _SERVER_FIELDS = {"hook_style", "hook_position", "brand_color", "brand_text_color", "subtitle_color",
-                  "font_path", "logo_path", "watermark", "faces_root"}
+                  "font_path", "logo_path", "watermark", "faces_root", "llm_provider"}
 
 
 def _settings_for(user: dict, raw: dict) -> "clipper.Settings":
@@ -465,6 +468,7 @@ def _settings_for(user: dict, raw: dict) -> "clipper.Settings":
         "hook_position": brand["hook_position"], "brand_color": brand["brand_color"],
         "brand_text_color": brand["brand_text_color"], "subtitle_color": brand["subtitle_color"],
         "watermark": brand["watermark"], "faces_root": str(user_root(user)),
+        "llm_provider": clipper.preferred_provider(),
         "logo_path": str(user_root(user) / "logo.png") if brand.get("logo") and (user_root(user) / "logo.png").exists() else "",
     })
     return clipper.Settings(**clean)
@@ -726,7 +730,7 @@ def rewrite_caption(job_id: str, clip_id: str, provider: str = Form(""), api_key
     if not clip:
         raise HTTPException(404, "Clip niet gevonden")
     settings = job.get("settings")
-    prov = provider or getattr(settings, "llm_provider", None) or "groq"
+    prov = provider or getattr(settings, "llm_provider", None) or ""
     key = api_key.strip() or job.get("api_key")
     lang = getattr(settings, "output_language", "") or clip.get("language") or "nl"
     data = campaign_rules.generate_caption(
@@ -744,6 +748,45 @@ def rewrite_caption(job_id: str, clip_id: str, provider: str = Form(""), api_key
             title=clip.get("title", ""))
     save_job_state(job_id)
     return clip
+
+
+_KEY_LABELS = {"groq": "Groq", "deepgram": "Deepgram", "anthropic": "Anthropic", "openai": "OpenAI"}
+
+
+def _keys_status() -> dict:
+    keys = {}
+    for name in _KEY_LABELS:
+        key = clipper.service_key(name)
+        keys[name] = {"configured": bool(key), "hint": ("…" + key[-4:]) if key else "",
+                      "source": clipper.key_source(name)}
+    return {"keys": keys, "provider": clipper.preferred_provider()}
+
+
+@app.get("/api/keys")
+def keys_status(user: dict = Depends(admin_user)):
+    """Welke sleutels de server heeft (alleen de laatste 4 tekens)."""
+    return _keys_status()
+
+
+@app.post("/api/keys")
+def keys_save(name: str = Form(...), api_key: str = Form(""), user: dict = Depends(admin_user)):
+    """Eén keer invullen: de sleutel blijft op het volume staan, ook na een herstart."""
+    if name not in _KEY_LABELS:
+        raise HTTPException(400, "Onbekende sleutel.")
+    key = api_key.strip()
+    if key and (len(key) < 20 or " " in key):
+        raise HTTPException(400, f"Dit lijkt geen {_KEY_LABELS[name]}-sleutel. Kopieer hem opnieuw.")
+    clipper.save_service_key(name, key)
+    return _keys_status()
+
+
+@app.post("/api/keys/provider")
+def keys_provider(provider: str = Form(...), user: dict = Depends(admin_user)):
+    try:
+        clipper.save_preferred_provider(provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _keys_status()
 
 
 @app.get("/api/deepgram")
@@ -1052,6 +1095,11 @@ def save_clip_stats(job_id: str, clip_id: str, request: Request, posted: Optiona
     return accounts.save_stats(user["id"], job_id, clip_id, data)
 
 
+def _job_status(job_id: str) -> Optional[str]:
+    job = JOBS.get(job_id) or load_job_state(job_id) or {}
+    return job.get("status")
+
+
 def _clips_of(job_id: str) -> list:
     job = JOBS.get(job_id)
     if job:
@@ -1062,7 +1110,8 @@ def _clips_of(job_id: str) -> list:
 
 @app.get("/api/analytics")
 def get_analytics(days: int = 30, user: dict = Depends(current_user)):
-    jobs = accounts.user_jobs(user["id"])
+    # Alleen geslaagde runs tellen mee; een mislukte run leverde niets op.
+    jobs = [j for j in accounts.user_jobs(user["id"]) if _job_status(j["job_id"]) == "done"]
     clips = {j["job_id"]: _clips_of(j["job_id"]) for j in jobs}
     data = analytics.build(jobs, clips, accounts.stats_for_user(user["id"]), accounts.list_campaigns(user["id"]),
                            days=max(7, min(90, days)))

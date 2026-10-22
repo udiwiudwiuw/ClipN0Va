@@ -72,7 +72,7 @@ class Settings:
     preferred_max: int = 40
     aspect_ratio: str = "9:16"       # "9:16", "1:1", "16:9"
     resolution: str = "1080x1920"
-    llm_provider: str = "anthropic"  # "anthropic" | "groq" | "openai"
+    llm_provider: str = ""           # "groq" | "anthropic" | "openai" — leeg = wat de beheerder koos
     face_priority: bool = True
     avoid_audio_only: bool = True
     subtitles: bool = True
@@ -181,26 +181,104 @@ def extract_audio(video_path: str, out_dir: str) -> str:
 
 
 # ---------- Deepgram (betaald, snelst) ----------
-DEEPGRAM_FILE = Path(__file__).parent / "storage" / "deepgram.json"
+# Sleutels die de beheerder één keer in de app invult. Ze staan op het volume
+# (storage/keys.json), dus ze blijven bewaard na een herstart of een nieuwe build
+# en hoeven niet bij elke `docker run` mee. Staat er niets, dan geldt de
+# omgevingsvariabele. Nooit in de code of de repo zetten.
+KEYS_FILE = Path(__file__).parent / "storage" / "keys.json"
+DEEPGRAM_FILE = Path(__file__).parent / "storage" / "deepgram.json"   # oud (t/m v126)
+KEY_ENV = {"deepgram": "DEEPGRAM_API_KEY", "groq": "GROQ_API_KEY",
+           "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+AI_PROVIDERS = ("groq", "anthropic", "openai")
+_KEYS_LOCK = threading.Lock()
+
+
+def _stored_keys() -> dict:
+    try:
+        data = json.loads(KEYS_FILE.read_text())
+        data = data if isinstance(data, dict) else {}
+    except Exception:
+        data = {}
+    if not data.get("deepgram"):
+        try:
+            old = json.loads(DEEPGRAM_FILE.read_text()).get("api_key")
+            if old:
+                data["deepgram"] = old
+        except Exception:
+            pass
+    return data
+
+
+def service_key(name: str) -> Optional[str]:
+    """Sleutel uit de app (storage/keys.json), anders uit de omgevingsvariabele."""
+    return (str(_stored_keys().get(name) or "").strip()
+            or os.environ.get(KEY_ENV.get(name, ""), "").strip() or None)
+
+
+def key_source(name: str) -> str:
+    """'app', 'env' of '' — waar de sleutel vandaan komt, voor het scherm."""
+    if str(_stored_keys().get(name) or "").strip():
+        return "app"
+    return "env" if os.environ.get(KEY_ENV.get(name, ""), "").strip() else ""
+
+
+def _write_keys(data: dict) -> None:
+    KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = KEYS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.chmod(tmp, 0o600)
+    tmp.replace(KEYS_FILE)
+
+
+def save_service_key(name: str, key: str) -> None:
+    with _KEYS_LOCK:
+        data = _stored_keys()
+        if key and key.strip():
+            data[name] = key.strip()
+        else:
+            data.pop(name, None)
+        _write_keys(data)
+        if name == "deepgram":
+            DEEPGRAM_FILE.unlink(missing_ok=True)
+
+
+def preferred_provider() -> str:
+    """De AI-aanbieder die de beheerder koos (standaard Groq)."""
+    p = str(_stored_keys().get("ai_provider") or os.environ.get("CLIPNOVA_AI_PROVIDER") or "groq").lower()
+    return p if p in AI_PROVIDERS else "groq"
+
+
+def save_preferred_provider(provider: str) -> None:
+    if provider not in AI_PROVIDERS:
+        raise ValueError(f"Onbekende aanbieder: {provider}")
+    with _KEYS_LOCK:
+        data = _stored_keys()
+        data["ai_provider"] = provider
+        _write_keys(data)
+
+
+def resolve_ai(provider: Optional[str] = None, api_key: Optional[str] = None) -> tuple:
+    """(aanbieder, sleutel) die echt bij elkaar horen. Tot v126 kon een
+    Groq-sleutel naar Anthropic gaan (of andersom), en dan viel de run stil
+    terug op 'geen AI'. Heeft de gekozen aanbieder geen sleutel, dan de eerste
+    aanbieder die er wel een heeft."""
+    provider = provider if provider in AI_PROVIDERS else ""
+    if api_key:
+        return provider or preferred_provider(), api_key
+    order = [p for p in (provider, preferred_provider()) + AI_PROVIDERS if p]
+    for p in dict.fromkeys(order):
+        key = service_key(p)
+        if key:
+            return p, key
+    return provider or preferred_provider(), None
 
 
 def deepgram_key() -> Optional[str]:
-    """Sleutel uit Account (storage/deepgram.json), anders uit DEEPGRAM_API_KEY."""
-    try:
-        k = json.loads(DEEPGRAM_FILE.read_text()).get("api_key")
-        if k:
-            return k
-    except Exception:
-        pass
-    return os.environ.get("DEEPGRAM_API_KEY") or None
+    return service_key("deepgram")
 
 
 def save_deepgram_key(key: str) -> None:
-    DEEPGRAM_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if key:
-        DEEPGRAM_FILE.write_text(json.dumps({"api_key": key.strip()}))
-    else:
-        DEEPGRAM_FILE.unlink(missing_ok=True)
+    save_service_key("deepgram", key)
 
 
 def _deepgram_request(body: bytes, key: str, model: str, language: Optional[str]) -> dict:
@@ -555,14 +633,14 @@ def call_llm(system: str, user: str, provider: str = "anthropic", api_key: Optio
     callers can fall back to heuristics. Prints what happened either way, so
     a fallback shows up clearly in `docker logs`/the terminal instead of
     failing silently."""
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    provider, key = resolve_ai(provider, api_key)
     if not key:
-        print(f"[ClipNova] Geen API-key gevonden voor provider '{provider}' — gebruik heuristische fallback (geen echte AI).")
+        print(f"[ClipNova] Geen AI-sleutel ingesteld (Groq, Anthropic of OpenAI) — gebruik heuristische fallback (geen echte AI).")
         return None
     try:
         if provider == "anthropic":
             import anthropic
-            client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+            client = anthropic.Anthropic(api_key=key)
             resp = client.messages.create(
                 model="claude-sonnet-4-6", max_tokens=max_tokens, system=system,
                 messages=[{"role": "user", "content": user}],
@@ -624,13 +702,17 @@ def test_llm_connection(provider: str = "anthropic", api_key: Optional[str] = No
     reachable and the key actually works, and returns a clear, displayable
     result — meant to be surfaced directly in the UI, since relying on
     Docker terminal logs to debug this has proven unreliable in practice."""
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if api_key is None and provider in AI_PROVIDERS:
+        # De test gaat over precies deze aanbieder, dus niet uitwijken naar een andere.
+        key = service_key(provider)
+    else:
+        provider, key = resolve_ai(provider, api_key)
     if not key:
-        return {"connected": False, "provider": provider, "message": f"Geen API-key gevonden voor provider '{provider}' (niet in het API-key veld, en ook niet als omgevingsvariabele bij het opstarten)."}
+        return {"connected": False, "provider": provider, "message": f"Nog geen sleutel voor {provider}. Plak hem hierboven en klik op Bewaren."}
     try:
         if provider == "anthropic":
             import anthropic
-            client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+            client = anthropic.Anthropic(api_key=key)
             resp = client.messages.create(model="claude-sonnet-4-6", max_tokens=10, messages=[{"role": "user", "content": "Reply with only the word OK"}])
             text = "".join(b.text for b in resp.content if b.type == "text")
         else:
@@ -1015,33 +1097,44 @@ def _score_sentence(text: str, lang: str) -> float:
     return score
 
 
-def _heuristic_hook(text: str, lang: str, idx: int = 0) -> str:
+def _heuristic_hook(text: str, lang: str, idx: int = 0, used: Optional[set] = None) -> str:
     """Template hook without an LLM. Takes the most striking sentence of the
     clip and puts a proven hook pattern around it; plain trimming of the
-    first words (the old behaviour) read like a transcript, not a hook."""
+    first words (the old behaviour) read like a transcript, not a hook.
+    Hooks in `used` (lowercase) are skipped, so clips of one run do not all
+    get the same text."""
+    used = used or set()
     sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+", " ".join(text.split())) if len(x.strip()) > 8]
     if not sentences:
         return " ".join(text.split())[:60]
-    best = max(sentences, key=lambda x: (_score_sentence(x, lang), -sentences.index(x)))
-    words = best.rstrip(".!?…,").split()
-    teaser = " ".join(words[:9]) + ("…" if len(words) > 9 else "")
-    num = None
-    m = [x.group(0).strip() for x in _NUM_RE.finditer(best) if re.search(r"\d", x.group(0))]
-    if m:
-        num = max(m, key=len)
-    if "?" in best:
-        return teaser.rstrip("…") + "?"
-    if num:
-        pats = {
-            "nl": ["Dit zegt hij over {n} 😱", "Wat doet hij met {n}? 😱", "{n}… hoe dan? 😱"],
-            "en": ["Here is what he says about {n} 😱", "What he does with {n} 😱", "{n}… how? 😱"],
-        }[lang]
-        return pats[idx % len(pats)].format(n=num)
-    pats = {
+    ranked = sorted(sentences, key=lambda x: (-_score_sentence(x, lang), sentences.index(x)))
+    num_pats = {
+        "nl": ["Dit zegt hij over {n} 😱", "Wat doet hij met {n}? 😱", "{n}… hoe dan? 😱"],
+        "en": ["Here is what he says about {n} 😱", "What he does with {n} 😱", "{n}… how? 😱"],
+    }[lang]
+    text_pats = {
         "nl": ["Dit vertelt niemand je 👀", "Let op: {t}", "{t} 🤯"],
         "en": ["Nobody tells you this 👀", "Pay attention: {t}", "{t} 🤯"],
     }[lang]
-    return pats[idx % len(pats)].format(t=teaser)
+
+    def _rot(pats):
+        return pats[idx % len(pats):] + pats[:idx % len(pats)]
+
+    candidates = []
+    for sentence in ranked:
+        words = sentence.rstrip(".!?…,").split()
+        teaser = " ".join(words[:9]) + ("…" if len(words) > 9 else "")
+        m = [x.group(0).strip() for x in _NUM_RE.finditer(sentence) if re.search(r"\d", x.group(0))]
+        if "?" in sentence:
+            candidates.append(teaser.rstrip("…") + "?")
+        if m:
+            num = max(m, key=len)
+            candidates.extend(p.format(n=num) for p in _rot(num_pats))
+        candidates.extend(p.format(t=teaser) for p in _rot(text_pats))
+    for hook in candidates:
+        if hook.lower() not in used:
+            return hook
+    return candidates[0]
 
 
 def _heuristic_clips(transcript: list[dict], settings: Settings) -> list[dict]:
@@ -1088,6 +1181,7 @@ def _heuristic_clips(transcript: list[dict], settings: Settings) -> list[dict]:
 
     cands.sort(key=lambda c: -c[0])
     used = []
+    used_hooks = set()
     top = cands[0][0] if cands else 1.0
     for score, i, j, dur, text in cands:
         a, b = float(transcript[i]["start"]), float(transcript[j]["end"])
@@ -1096,10 +1190,12 @@ def _heuristic_clips(transcript: list[dict], settings: Settings) -> list[dict]:
         used.append((a, b))
         clips.append({
             "start": a, "end": b,
-            "hook": _heuristic_hook(text, lang, len(clips)),
+            "hook": _heuristic_hook(text, lang, len(clips), used_hooks),
             "reason": "Heuristische score (geen AI): cijfers, sterke woorden, tempo",
             "score": round(0.45 + 0.45 * (score / top if top > 0 else 0), 2),
+            "ai": False,
         })
+        used_hooks.add(clips[-1]["hook"].lower())
         if len(clips) >= settings.max_clips:
             break
     clips.sort(key=lambda c: c["start"])
@@ -2379,6 +2475,10 @@ def _moments_from_audio(video_path: str, settings: "Settings", video_end: Option
 # ---------------------------------------------------------------------------
 # De hele video verwerken
 # ---------------------------------------------------------------------------
+class TranscribeError(RuntimeError):
+    """Uitschrijven lukte op geen enkele manier; de tekst is voor de klant bedoeld."""
+
+
 def process_video(video_path: str, briefing: str, settings: "Settings", job_dir: str,
                   api_key: Optional[str] = None, rules: Optional[dict] = None,
                   progress_cb=None) -> list:
@@ -2400,7 +2500,7 @@ def process_video(video_path: str, briefing: str, settings: "Settings", job_dir:
     report("transcribe", 0.0)
     if has_audio:
         audio = extract_audio(video_path, job_dir)
-        groq_key = (api_key if settings.llm_provider == "groq" else None) or os.environ.get("GROQ_API_KEY")
+        groq_key = (api_key if settings.llm_provider == "groq" else None) or service_key("groq")
         local_only = os.environ.get("CLIPPARTY_LOCAL_WHISPER") == "1"
         dg_key = None if local_only else deepgram_key()
         done = False
@@ -2423,8 +2523,19 @@ def process_video(video_path: str, briefing: str, settings: "Settings", job_dir:
             except Exception as e:
                 print(f"[ClipNova] Groq-transcriptie mislukt, lokaal verder: {str(e)[:200]}", flush=True)
         if not done:
-            transcript, language_info = transcribe(audio, progress_cb=lambda f: report("transcribe", f),
-                                                   language=spoken)
+            try:
+                transcript, language_info = transcribe(audio, progress_cb=lambda f: report("transcribe", f),
+                                                       language=spoken)
+            except Exception as e:
+                # Zonder tekst geen ondertitels en geen hooks: liever stoppen (zonder
+                # credits af te schrijven) dan halve clips maken.
+                print(f"[ClipNova] Lokaal uitschrijven mislukt: {type(e).__name__}: {e}", flush=True)
+                raise TranscribeError(
+                    "Het uitschrijven van de video lukte niet, dus er zijn geen clips gemaakt en geen "
+                    "credits gebruikt. Probeer het later opnieuw."
+                    + ("" if (dg_key or groq_key) else
+                       " (Beheerder: stel een Deepgram- of Groq-sleutel in onder Account.)")
+                    + f" [{type(e).__name__}: {str(e)[:120]}]") from e
     else:
         print("[ClipNova] Video zonder geluidsspoor — transcriptie overgeslagen.", flush=True)
         language_info = {"language": spoken or "nl"}
@@ -2464,8 +2575,12 @@ def process_video(video_path: str, briefing: str, settings: "Settings", job_dir:
         video_end = real_end
 
     chosen = _normalise_clips(chosen)
-    if chosen:
-        notes.append(f"AI koos {len(chosen)} moment(en) uit de tekst")
+    by_ai = sum(1 for c in chosen if c.get("ai", True))
+    if by_ai:
+        notes.append(f"AI koos {by_ai} moment(en) uit de tekst")
+    elif chosen:
+        notes.append(f"{len(chosen)} moment(en) uit de tekst gekozen zonder AI "
+                     "(geen AI-sleutel ingesteld of AI niet bereikbaar)")
     notes.insert(0, "taal van de video: " + LANG_NAMES.get(spoken_lang or "", spoken_lang or "onbekend"))
 
     if not chosen:
