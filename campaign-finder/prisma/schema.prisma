@@ -1,0 +1,140 @@
+// ClipNova Campaign Video Finder — datamodel (SQLite)
+// Toepassen: `npx prisma db push`   (of `npx prisma migrate dev` voor migraties)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Een clipcampagne met de regels waarmee video's worden gezocht en gescoord.
+model Campaign {
+  id                  String          @id @default(cuid())
+  name                String
+  brand               String          @default("") // merk / creator / streamer
+  description         String          @default("")
+  audience            String          @default("")
+  /// JSON-array met toegestane bronnen: YouTube-kanaal-URL's, video-URL's, @handles
+  sources             String          @default("[]")
+  /// Kommagescheiden
+  keywords            String          @default("")
+  people              String          @default("")
+  topics              String          @default("")
+  language            String          @default("nl")
+  minMinutes          Float?
+  maxMinutes          Float?
+  rules               String          @default("")
+  usageRights         String          @default("")
+  /// Kommagescheiden
+  excludedTopics      String          @default("")
+  active              Boolean         @default(true)
+  /// 0 = niet automatisch zoeken
+  searchIntervalHours Int             @default(0)
+  lastSearchedAt      DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  matches             CampaignVideo[]
+  feedback            Feedback[]
+  runs                SearchRun[]
+}
+
+/// Feitelijke metadata van een gevonden video (gedeeld tussen campagnes).
+model Video {
+  id           String          @id @default(cuid())
+  platform     String          @default("youtube")
+  externalId   String
+  url          String          @unique
+  title        String
+  description  String          @default("")
+  channelId    String          @default("")
+  channelTitle String          @default("")
+  thumbnailUrl String          @default("")
+  publishedAt  DateTime?
+  durationSec  Int?
+  language     String?
+  viewCount    Int?
+  likeCount    Int?
+  commentCount Int?
+  tags         String          @default("")
+  /// JSON: [{ "start": sec, "dur": sec, "text": "..." }] of null
+  transcript   String?
+  /// youtube_api | rss | mock
+  source       String
+  fetchedAt    DateTime        @default(now())
+  matches      CampaignVideo[]
+
+  @@unique([platform, externalId])
+}
+
+/// Een video binnen een campagne: status + AI-beoordeling.
+model CampaignVideo {
+  id             String     @id @default(cuid())
+  campaignId     String
+  videoId        String
+  /// new | approved | rejected
+  status         String     @default("new")
+  matchScore     Int?
+  clipScore      Int?
+  /// geschikt | twijfel | ongeschikt
+  verdict        String?
+  reasoning      String?
+  /// JSON: [{ "start": "02:15", "end": "03:45", "reason": "...", "hook": "..." }]
+  timestamps     String     @default("[]")
+  /// JSON-array met regelovertredingen
+  violations     String     @default("[]")
+  detectedTopics String     @default("[]")
+  /// openai | anthropic | heuristic
+  analysisSource String?
+  aiModel        String?
+  analyzedAt     DateTime?
+  analysisError  String?
+  notes          String     @default("")
+  foundByRunId   String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  campaign       Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  video          Video      @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  feedback       Feedback[]
+
+  @@unique([campaignId, videoId])
+  @@index([campaignId, status])
+}
+
+/// Feedback die de toekomstige scoring van een campagne stuurt.
+model Feedback {
+  id         String         @id @default(cuid())
+  campaignId String
+  matchId    String?
+  /// approve | reject | prefer | avoid | note
+  kind       String
+  text       String
+  active     Boolean        @default(true)
+  createdAt  DateTime       @default(now())
+  campaign   Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  match      CampaignVideo? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+}
+
+/// Eén zoekronde (handmatig of gepland).
+model SearchRun {
+  id         String    @id @default(cuid())
+  campaignId String
+  /// queued | running | done | failed
+  status     String    @default("queued")
+  trigger    String    @default("manual") // manual | schedule
+  sources    String    @default("[]") // gebruikte zoekbronnen
+  found      Int       @default(0)
+  newVideos  Int       @default(0)
+  skipped    Int       @default(0)
+  analyzed   Int       @default(0)
+  error      String?
+  log        String    @default("[]")
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  campaign   Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+}
