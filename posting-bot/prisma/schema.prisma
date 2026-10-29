@@ -1,0 +1,123 @@
+// ClipNova Posting Bot — datamodel (SQLite)
+// Toepassen: `npx prisma db push`   (of `npx prisma migrate dev` voor migraties)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Een gekoppeld social-media account (meerdere per platform mogelijk).
+model Account {
+  id             String    @id @default(cuid())
+  platform       String // tiktok | youtube | instagram
+  externalId     String // open_id (TikTok), channelId (YouTube), ig user id (Instagram)
+  handle         String
+  displayName    String
+  avatarUrl      String?
+  accessToken    String?
+  refreshToken   String?
+  tokenExpiresAt DateTime?
+  scopes         String?
+  /// active | needs_reauth | error | paused
+  status         String    @default("active")
+  isMock         Boolean   @default(false)
+  timezone       String    @default("Europe/Amsterdam")
+  /// Kommagescheiden lokale tijden, bijv. "09:00,13:00,19:30"
+  postingTimes   String    @default("09:00,13:00,19:00")
+  dailyLimit     Int       @default(3)
+  lastError      String?
+  lastSyncAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  posts          Post[]
+  logs           Log[]
+
+  @@unique([platform, externalId])
+}
+
+/// Een clip in de centrale videobibliotheek.
+model Clip {
+  id          String   @id @default(cuid())
+  filename    String
+  filePath    String
+  mimeType    String   @default("video/mp4")
+  sizeBytes   Int      @default(0)
+  durationSec Float?
+  /// SHA-256 van de inhoud — voorkomt dubbele imports
+  checksum    String   @unique
+  /// upload | folder | clipnova
+  source      String   @default("upload")
+  sourceRef   String?
+  campaign    String?
+  creator     String?
+  title       String   @default("")
+  caption     String   @default("")
+  /// Spatiegescheiden, met #
+  hashtags    String   @default("")
+  /// draft | ready | archived
+  status      String   @default("draft")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  posts       Post[]
+}
+
+/// Eén geplande publicatie van één clip op één account.
+model Post {
+  id             String    @id @default(cuid())
+  clipId         String
+  accountId      String
+  platform       String
+  title          String    @default("")
+  caption        String    @default("")
+  hashtags       String    @default("")
+  scheduledAt    DateTime
+  /// draft | queued | processing | success | failed | needs_reauth | cancelled
+  status         String    @default("draft")
+  approved       Boolean   @default(false)
+  captionSource  String    @default("clip") // clip | ai | template | manual
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(4)
+  nextAttemptAt  DateTime?
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastError      String?
+  /// Gezet zodra het platform een upload accepteert; daarna nooit opnieuw uploaden
+  externalId     String?
+  externalUrl    String?
+  /// Uniek per (clip, account) — vangt dubbele planning af
+  idempotencyKey String    @unique
+  publishedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  clip           Clip      @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  logs           Log[]
+
+  @@index([status, scheduledAt])
+  @@index([accountId, scheduledAt])
+}
+
+model Log {
+  id        String   @id @default(cuid())
+  level     String   @default("info") // debug | info | warn | error
+  message   String
+  meta      String?
+  postId    String?
+  accountId String?
+  createdAt DateTime @default(now())
+  post      Post?    @relation(fields: [postId], references: [id], onDelete: SetNull)
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+/// Instellingen die via de UI zijn aangepast (overschrijven .env)
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
